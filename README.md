@@ -2,7 +2,7 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/iebb/botgram)
 
-[Open the source on GitHub](https://github.com/iebb/botgram) · [Open the live dashboard](https://humanoid.ieb.workers.dev)
+[Open the source on GitHub](https://github.com/iebb/botgram) · [Open the live dashboard](https://botgram.ieb.app)
 
 Botgram is the source for Humanoid, a Telegram-style control room for Telegram
 bot accounts. React and Next.js produce the static interface; a Cloudflare Worker
