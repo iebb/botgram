@@ -7,8 +7,10 @@ does not use Durable Object storage.
 
 ## Runtime contract
 
-- `BOT_TOKEN` is a Worker secret and the dashboard login credential.
-- `/telegram/webhook` rejects updates without Telegram's expected secret header.
+- The bot token is browser-owned localStorage data, not a Worker secret. A
+  session-only browser cookie mirrors it for native media and WebSocket transport.
+- `/telegram/webhook/<hub-key>/<secret-digest>` rejects updates unless Telegram's
+  secret header hashes to the digest in the route.
 - The Worker relays updates and Bot API results only to dashboards currently open.
 - React applies live events immediately. It coalesces per-bot chats, messages,
   queries, raw updates, redacted logs, selected chat, and resolved avatar file IDs
@@ -23,8 +25,8 @@ does not use Durable Object storage.
   history. IndexedDB remains local to one browser profile and is subject to browser
   clearing, private-mode behavior, quota, and eviction.
 - Worker observability is disabled and proxied Telegram files use `no-store`.
-- Login uses a signed session cookie with no browser-persistence attribute. It
-  contains no token and has a 24-hour signature expiry.
+- The Worker has no credential/session storage. Complete-token one-way hashes
+  isolate transient bot hubs without revealing one bot's events to another.
 
 Telegram itself still owns and retains Telegram-side messages and media. Humanoid
 cannot retrieve arbitrary existing history, and bots still cannot initiate a new
@@ -47,13 +49,15 @@ npm test
 npm run typecheck
 npm run build
 npx wrangler deploy --dry-run
-CLOUDFLARE_ACCOUNT_ID=<ieb-account-id> npx wrangler deploy --secrets-file .env
+CLOUDFLARE_ACCOUNT_ID=<ieb-account-id> npx wrangler deploy
 HUMANOID_URL=https://<deployment> npm run verify:live
 ```
 
-The ignored `.env` is the only local token source. Never print, commit, or move the
-token into Wrangler variables. Restore Telegram delivery from **Updates -> Restore
-webhook** after experimenting with a different webhook or `getUpdates` client.
+The ignored `.env` supplies the token only to local/live verification. Never
+print, commit, or move it into Wrangler variables or secrets. The app saves an
+operator-entered token in that browser's localStorage. Restore Telegram delivery
+from **Updates -> Restore webhook** after experimenting with another webhook or
+`getUpdates` client.
 
 ## UI behavior
 
@@ -61,7 +65,7 @@ webhook** after experimenting with a different webhook or `getUpdates` client.
   discovered sticker library, then broadcasts a clear event to other open
   dashboards. It does not affect Telegram messages, the Rich Studio draft, or the
   theme.
-- Rich Message Studio opens a Notion-style block canvas with drag handles, `/`
+- Rich Message Studio opens a Notion-style Block Editor with drag handles, `/`
   commands, and block context actions. Advanced source/native views remain present.
 - User profile photos use `getUserProfilePhotos`; group/channel photos use
   `getChat`. Telegram file IDs persist in IndexedDB; proxied image bytes use
@@ -77,12 +81,13 @@ webhook** after experimenting with a different webhook or `getUpdates` client.
 
 ## Verification boundary
 
-Worker tests cover authentication, webhook rejection, transient WebSocket delivery,
-deduplication within a live object instance, guest/ephemeral routing, session-only
+Worker tests cover browser-owned credentials, stateless webhook rejection,
+transient WebSocket delivery, deduplication within a live object instance,
+guest/ephemeral routing, session-only
 server logs, and empty server snapshots. Browser tests cover per-bot IndexedDB
 round-tripping, sticker-library persistence/deduplication/frequency sorting, admin
 permission visibility, and the separation of dashboard history from preferences
-and rich drafts. The live verifier checks login, empty server state, the real bot,
+and rich drafts. The live verifier checks credential rejection, empty server state, the real bot,
 authenticated WebSocket readiness, avatar resolution, and webhook installation
 without contacting a user. A real Telegram interaction is still required to prove
 end-to-end user-to-bot delivery and browser restoration.

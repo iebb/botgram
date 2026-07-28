@@ -1,7 +1,9 @@
 import { env, reset, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AppSnapshot, StreamEvent } from "../lib/types";
-import { makeSessionCookie } from "../worker/auth";
+import { botTokenKey, webhookSecretDigest } from "../worker/auth";
+
+const TOKEN = "123456789:abcdefghijklmnopqrstuvwxyz_ABCDEFG";
 
 const CHAT = {
   id: -100424242,
@@ -9,9 +11,8 @@ const CHAT = {
   title: "Worker test chat",
 } as const;
 
-function hub() {
-  const botId = env.BOT_TOKEN.split(":", 1)[0] || "primary";
-  return env.BOT_HUB.getByName(`bot:${botId}`);
+async function hub() {
+  return env.BOT_HUB.getByName(`bot:${await botTokenKey(TOKEN)}`);
 }
 
 function update(updateId: number, messageId = 42) {
@@ -25,10 +26,6 @@ function update(updateId: number, messageId = 42) {
       text: "near-real-time",
     },
   };
-}
-
-async function sessionCookie(): Promise<string> {
-  return (await makeSessionCookie(env.BOT_TOKEN)).split(";", 1)[0];
 }
 
 function nextFrame(socket: WebSocket): Promise<StreamEvent> {
@@ -55,7 +52,7 @@ function collectFrames(socket: WebSocket, count: number): Promise<StreamEvent[]>
 
 async function openSocket(): Promise<WebSocket> {
   const response = await SELF.fetch("https://example.com/api/ws", {
-    headers: { cookie: await sessionCookie(), upgrade: "websocket" },
+    headers: { authorization: `Bearer ${TOKEN}`, upgrade: "websocket" },
   });
   expect(response.status).toBe(101);
   const socket = response.webSocket;
@@ -75,22 +72,38 @@ describe("Humanoid Worker", () => {
     expect(state.status).toBe(401);
     await expect(state.json()).resolves.toMatchObject({ ok: false, error_code: 401 });
 
-    const webhook = await SELF.fetch("https://example.com/telegram/webhook", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-telegram-bot-api-secret-token": "wrong",
-      },
-      body: JSON.stringify(update(10)),
-    });
+    const webhook = await SELF.fetch(
+      `https://example.com/telegram/webhook/${await botTokenKey(TOKEN)}/${await webhookSecretDigest("right-secret")}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": "wrong",
+        },
+        body: JSON.stringify(update(10)),
+      }
+    );
     expect(webhook.status).toBe(401);
+
+    const accepted = await SELF.fetch(
+      `https://example.com/telegram/webhook/${await botTokenKey(TOKEN)}/${await webhookSecretDigest("right-secret")}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": "right-secret",
+        },
+        body: JSON.stringify(update(11)),
+      }
+    );
+    expect(accepted.status).toBe(204);
   });
 
   it("fans ordinary supergroup text out immediately without retaining its payload", async () => {
     const socket = await openSocket();
     const framesPromise = collectFrames(socket, 3);
     const incoming = update(20);
-    await hub().ingestUpdateJson(JSON.stringify(incoming));
+    await (await hub()).ingestUpdateJson(JSON.stringify(incoming));
     const frames = await framesPromise;
 
     expect(frames.map((frame) => frame.type)).toEqual(["raw", "message", "chat"]);
@@ -99,8 +112,8 @@ describe("Humanoid Worker", () => {
       message: { text: "near-real-time", _key: "m:42" },
     });
 
-    await hub().ingestUpdateJson(JSON.stringify(incoming));
-    const snapshot = JSON.parse(await hub().getSnapshotJson()) as AppSnapshot;
+    await (await hub()).ingestUpdateJson(JSON.stringify(incoming));
+    const snapshot = JSON.parse(await (await hub()).getSnapshotJson()) as AppSnapshot;
     expect(snapshot.polling.updatesSeen).toBe(0);
     expect(snapshot.chats).toEqual([]);
     expect(snapshot.messages).toEqual({});
@@ -111,7 +124,7 @@ describe("Humanoid Worker", () => {
   it("emits redacted API activity only to the current WebSocket session", async () => {
     const socket = await openSocket();
     const framePromise = nextFrame(socket);
-    await hub().recordTelegramCallJson(
+    await (await hub()).recordTelegramCallJson(
       "getManagedBotToken",
       JSON.stringify({ user_id: 707, provider_token: "top-secret" }),
       JSON.stringify({ ok: true, result: { token: "123456789:abcdefghijklmnopqrstuvwxyz_ABCDEFG" } }),
@@ -126,7 +139,7 @@ describe("Humanoid Worker", () => {
         result: "[sensitive response omitted from the session log]",
       },
     });
-    const snapshot = JSON.parse(await hub().getSnapshotJson()) as AppSnapshot;
+    const snapshot = JSON.parse(await (await hub()).getSnapshotJson()) as AppSnapshot;
     expect(snapshot.log).toEqual([]);
     expect(JSON.stringify(snapshot)).not.toContain("top-secret");
     socket.close(1000, "test complete");
@@ -135,7 +148,7 @@ describe("Humanoid Worker", () => {
   it("routes guest and ephemeral interactions as transient events", async () => {
     const socket = await openSocket();
     const guestFrames = collectFrames(socket, 2);
-    await hub().ingestUpdateJson(JSON.stringify({
+    await (await hub()).ingestUpdateJson(JSON.stringify({
       update_id: 26,
       guest_message: {
         message_id: 0,
@@ -152,7 +165,7 @@ describe("Humanoid Worker", () => {
     });
 
     const messageFrames = collectFrames(socket, 3);
-    await hub().ingestUpdateJson(JSON.stringify({
+    await (await hub()).ingestUpdateJson(JSON.stringify({
       update_id: 27,
       message: {
         message_id: 0,
@@ -168,7 +181,7 @@ describe("Humanoid Worker", () => {
     });
 
     const patchFrame = nextFrame(socket);
-    await hub().absorbTelegramResultJson(
+    await (await hub()).absorbTelegramResultJson(
       "editEphemeralMessageText",
       JSON.stringify({ chat_id: CHAT.id, ephemeral_message_id: 991, text: "edited privately" }),
       "true",

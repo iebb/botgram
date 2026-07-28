@@ -3,7 +3,7 @@
 import React, { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "./Store";
 import { Field, Select, TextInput, Toggle } from "./UI";
-import KeyboardBuilder, { buildReplyMarkup, emptyKb, type KbDraft } from "./KeyboardBuilder";
+import KeyboardBuilder, { KeyboardPreview, buildReplyMarkup, emptyKb, type KbDraft } from "./KeyboardBuilder";
 import RichMessagePreview from "./RichMessagePreview";
 import RichWysiwygEditor, { type RichWysiwygHandle } from "./RichWysiwygEditor";
 import { chatName, messagePreview } from "@/lib/format";
@@ -12,6 +12,7 @@ import {
   RICH_BLOCK_SNIPPETS,
   RICH_TEMPLATES,
   buildInputRichMessage,
+  buildThinkingRichDraft,
   containsThinkingBlock,
   parseRichBlocks,
   richMediaMarkup,
@@ -67,6 +68,17 @@ interface SavedStudio {
 
 type StudioView = "visual" | "source";
 
+interface LiveDraftInput {
+  eligible: boolean;
+  target: string;
+  messageThreadId?: number;
+  draftId: number;
+  mode: RichMode;
+  content: string;
+  rtl: boolean;
+  skipDetection: boolean;
+}
+
 const DEFAULT_OPTIONS: SendOptions = {
   messageThreadId: "",
   directMessagesTopicId: "",
@@ -80,27 +92,50 @@ const DEFAULT_OPTIONS: SendOptions = {
 };
 
 const HTML_INSERTS = [
-  ["Heading", "<h2>Section heading</h2>"],
+  ["H1", "<h1>Heading 1</h1>"],
+  ["H2", "<h2>Heading 2</h2>"],
+  ["H3", "<h3>Heading 3</h3>"],
+  ["H4", "<h4>Heading 4</h4>"],
+  ["H5", "<h5>Heading 5</h5>"],
+  ["H6", "<h6>Heading 6</h6>"],
   ["Paragraph", "<p>Paragraph text</p>"],
   ["Callout", "<aside>Important callout<cite>Source</cite></aside>"],
   ["Checklist", '<ul>\n  <li><input type="checkbox" checked> Completed item</li>\n  <li><input type="checkbox"> Open item</li>\n</ul>'],
+  ["Ordered list", '<ol start="1"><li>First item</li><li>Second item</li></ol>'],
+  ["Quote", "<blockquote>Quoted text<cite>Source</cite></blockquote>"],
+  ["Footer", "<footer>Footer text</footer>"],
+  ["Divider", "<hr>"],
   ["Details", "<details><summary>More details</summary><p>Expandable content</p></details>"],
   ["Table", "<table bordered striped><caption>Metrics</caption><tr><th>Name</th><th>Value</th></tr><tr><td>Latency</td><td>Realtime</td></tr></table>"],
   ["Map", '<tg-map lat="35.681236" long="139.767125" zoom="14"/>'],
   ["Math", "<tg-math-block>E = mc^2</tg-math-block>"],
+  ["Anchor", '<a name="section"></a>'],
+  ["Reference", '<tg-reference name="note">Referenced text</tg-reference>'],
+  ["Collage", '<tg-collage><img src="https://telegram.org/example/photo.jpg"><video src="https://telegram.org/example/video.mp4"></video><figcaption>Collage caption</figcaption></tg-collage>'],
+  ["Slideshow", '<tg-slideshow><img src="https://telegram.org/example/photo.jpg"><video src="https://telegram.org/example/video.mp4"></video><figcaption>Slideshow caption</figcaption></tg-slideshow>'],
   ["Thinking", "<tg-thinking>Thinking…</tg-thinking>"],
 ] as const;
 
 const MARKDOWN_INSERTS = [
-  ["Heading", "## Section heading"],
+  ["H1", "# Heading 1"],
+  ["H2", "## Heading 2"],
+  ["H3", "### Heading 3"],
+  ["H4", "#### Heading 4"],
+  ["H5", "##### Heading 5"],
+  ["H6", "###### Heading 6"],
   ["Bold", "**bold text**"],
   ["Link", "[Telegram](https://telegram.org)"],
   ["Quote", "> Quoted text"],
   ["Checklist", "- [x] Completed item\n- [ ] Open item"],
+  ["Ordered list", "1. First item\n2. Second item"],
   ["Table", "| Name | Value |\n|:--|--:|\n| Latency | Realtime |"],
   ["Code", "```typescript\nconst ready = true;\n```"],
   ["Math", "$$E = mc^2$$"],
+  ["Footnote", "Text with a note[^note].\n\n[^note]: Footnote text."],
+  ["Media", '![Media caption](https://telegram.org/example/photo.jpg "Caption")'],
   ["Details", "<details><summary>More details</summary>Expandable content</details>"],
+  ["Collage", "<tg-collage>\n\n![](https://telegram.org/example/photo.jpg)\n![](https://telegram.org/example/video.mp4)\n\n</tg-collage>"],
+  ["Slideshow", "<tg-slideshow>\n\n![](https://telegram.org/example/photo.jpg)\n![](https://telegram.org/example/video.mp4)\n\n</tg-slideshow>"],
 ] as const;
 
 export default function RichMessageEditor({ onClose }: { onClose: () => void }) {
@@ -117,6 +152,8 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   const [options, setOptions] = useState<SendOptions>(DEFAULT_OPTIONS);
   const [busy, setBusy] = useState<"send" | "draft" | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [liveDraftEnabled, setLiveDraftEnabled] = useState(false);
+  const [liveDraftSentAt, setLiveDraftSentAt] = useState<number | null>(null);
   const sourceRef = useRef<HTMLTextAreaElement>(null);
   const wysiwygRef = useRef<RichWysiwygHandle>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -124,6 +161,12 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   const loadedDraftBot = useRef("");
   const latestDraft = useRef<SavedStudio | null>(null);
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveDraftInput = useRef<LiveDraftInput | null>(null);
+  const liveDraftInFlight = useRef(false);
+  const liveDraftPending = useRef<Promise<void> | null>(null);
+  const liveDraftRequested = useRef(false);
+  const liveDraftLastSignature = useRef("");
+  const liveDraftLastSuccessAt = useRef(0);
   uploadsRef.current = uploads;
 
   const draftBotId = state.me?.id == null ? "" : String(state.me.id);
@@ -136,6 +179,16 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   const selectedTargetChat = state.chats.find((entry) => String(entry.chat.id) === target);
   const canStream = selectedTargetChat?.chat.type === "private" && uploads.length === 0;
   const draftOnly = containsThinkingBlock(mode, content);
+  liveDraftInput.current = {
+    eligible: canStream,
+    target,
+    messageThreadId: numberOrUndefined(options.messageThreadId),
+    draftId,
+    mode,
+    content,
+    rtl,
+    skipDetection,
+  };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => event.key === "Escape" && onClose();
@@ -154,8 +207,12 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
     if (!saved.sources || typeof saved.sources.html !== "string" || typeof saved.sources.markdown !== "string" || typeof saved.sources.blocks !== "string") {
       throw new Error("Rich studio sources are invalid");
     }
-    setMode(saved.mode);
-    setEditorView(saved.mode === "html" && saved.view !== "source" ? "visual" : "source");
+    // Reopening/importing always lands on the visual HTML representation; the
+    // saved Markdown and block sources remain available in their source tabs.
+    setMode("html");
+    setEditorView("visual");
+    setLiveDraftEnabled(false);
+    setLiveDraftSentAt(null);
     setSources(saved.sources);
     setRtl(Boolean(saved.rtl));
     setSkipDetection(Boolean(saved.skipDetection));
@@ -187,6 +244,75 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
       cancelled = true;
     };
   }, [applySaved, draftBotId, notify]);
+
+  useEffect(() => {
+    if (!liveDraftEnabled) return;
+    let active = true;
+
+    const publish = async () => {
+      const current = liveDraftInput.current;
+      if (!liveDraftRequested.current || !current?.eligible || !current.content.trim() || liveDraftInFlight.current) return;
+      const signature = JSON.stringify(current);
+      const now = Date.now();
+      if (
+        signature === liveDraftLastSignature.current &&
+        now - liveDraftLastSuccessAt.current < 15_000
+      ) return;
+
+      liveDraftInFlight.current = true;
+      try {
+        const response = await call("sendRichMessageDraft", {
+          chat_id: Number(current.target),
+          message_thread_id: current.messageThreadId,
+          draft_id: current.draftId,
+          rich_message: buildThinkingRichDraft(
+            current.mode,
+            current.content,
+            current.rtl,
+            current.skipDetection
+          ),
+        });
+        if (!active) return;
+        if (!response.ok) {
+          setLiveDraftEnabled(false);
+          return;
+        }
+        liveDraftLastSignature.current = signature;
+        liveDraftLastSuccessAt.current = Date.now();
+        setLiveDraftSentAt(liveDraftLastSuccessAt.current);
+      } catch (error) {
+        if (!active) return;
+        notify(error instanceof Error ? error.message : "Could not stream this rich draft", "err");
+        setLiveDraftEnabled(false);
+      } finally {
+        liveDraftInFlight.current = false;
+      }
+    };
+
+    const runPublish = () => {
+      const pending = publish();
+      liveDraftPending.current = pending;
+      void pending.finally(() => {
+        if (liveDraftPending.current === pending) liveDraftPending.current = null;
+      });
+    };
+    liveDraftRequested.current = true;
+    const first = window.setTimeout(runPublish, 600);
+    const interval = window.setInterval(runPublish, 3_000);
+    return () => {
+      active = false;
+      liveDraftRequested.current = false;
+      window.clearTimeout(first);
+      window.clearInterval(interval);
+    };
+  }, [call, liveDraftEnabled, notify]);
+
+  useEffect(() => {
+    if (liveDraftEnabled && !canStream) {
+      liveDraftRequested.current = false;
+      setLiveDraftEnabled(false);
+    }
+  }, [canStream, liveDraftEnabled]);
 
   useEffect(() => {
     if (!draftBotId || loadedDraftBot.current !== draftBotId) return;
@@ -347,8 +473,13 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
     if (asDraft && !canStream) {
       return notify("Streamed rich drafts require a known private chat and cannot upload new files", "err");
     }
+    if (!asDraft) {
+      liveDraftRequested.current = false;
+      setLiveDraftEnabled(false);
+    }
     setBusy(asDraft ? "draft" : "send");
     try {
+      if (!asDraft && liveDraftPending.current) await liveDraftPending.current;
       const params = buildParams();
       const response = asDraft
         ? await call("sendRichMessageDraft", {
@@ -402,6 +533,8 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
     setSources(DEFAULT_RICH_SOURCES);
     setMode("html");
     setEditorView("visual");
+    setLiveDraftEnabled(false);
+    setLiveDraftSentAt(null);
     setRtl(false);
     setSkipDetection(false);
     setKeyboard(emptyKb);
@@ -465,11 +598,13 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
               <div className="section-title">Templates</div>
               <div className="rich-template-list">
                 {RICH_TEMPLATES.map((template) => (
-                  <button key={template.id} className="rich-template" onClick={() => {
-                    setMode(template.mode);
-                    setEditorView(template.mode === "html" ? "visual" : "source");
-                    setSources((current) => ({ ...current, [template.mode]: template.content }));
-                  }}>
+                  <button
+                    key={template.id}
+                    type="button"
+                    className="rich-template"
+                    title="Replace every representation without changing the active editor tab"
+                    onClick={() => setSources(template.sources)}
+                  >
                     <strong>{template.label}</strong>
                     <span>{template.description}</span>
                   </button>
@@ -525,7 +660,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
                 const active = item === "visual" ? editorView === "visual" : editorView === "source" && mode === item;
                 return (
                   <button key={item} role="tab" aria-selected={active} className={active ? "active" : ""} onClick={() => selectEditorTab(item)}>
-                    {item === "visual" ? "Notion-style editor" : item === "html" ? "HTML source" : item === "markdown" ? "Rich Markdown" : "Native blocks"}
+                    {item === "visual" ? "Block Editor" : item === "html" ? "HTML source" : item === "markdown" ? "Rich Markdown" : "Native blocks"}
                   </button>
                 );
               })}
@@ -580,9 +715,11 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
               <span className="chip accent">Live</span>
             </div>
             <div className="rich-preview-canvas">
-              <div className="rich-preview-bubble">
-                <RichMessagePreview mode={mode} content={content} rtl={rtl} media={uploads} />
-                {keyboard.mode !== "none" && <div className="rich-keyboard-hint"><IconKeyboard size={14} /> {keyboard.mode} keyboard · {"rows" in keyboard ? keyboard.rows.length : 1} row(s)</div>}
+              <div className="rich-preview-message">
+                <div className="rich-preview-bubble">
+                  <RichMessagePreview mode={mode} content={content} rtl={rtl} media={uploads} />
+                </div>
+                <KeyboardPreview value={keyboard} />
               </div>
             </div>
 
@@ -606,9 +743,30 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
 
         <footer className="rich-studio-footer">
           <div className="muted rich-studio-footnote">
-            Exactly one representation is sent. Thinking blocks are draft-only; newly uploaded files cannot be streamed.
+            <label className={`rich-live-draft-toggle${!canStream ? " disabled" : ""}`}>
+              <input
+                type="checkbox"
+                checked={liveDraftEnabled}
+                disabled={!canStream}
+                onChange={(event) => {
+                  liveDraftRequested.current = event.target.checked;
+                  liveDraftLastSignature.current = "";
+                  liveDraftLastSuccessAt.current = 0;
+                  setLiveDraftSentAt(null);
+                  setLiveDraftEnabled(event.target.checked);
+                }}
+              />
+              <span>Stream unfinished input with Thinking every 3 seconds</span>
+            </label>
+            <span>
+              {liveDraftEnabled
+                ? liveDraftSentAt
+                  ? `Live draft updated ${new Date(liveDraftSentAt).toLocaleTimeString()}`
+                  : "Live draft waiting for input…"
+                : "Exactly one representation is sent. Thinking blocks are draft-only; newly uploaded files cannot be streamed."}
+            </span>
           </div>
-          <button className="btn" disabled={busy !== null || !canStream || validation.errors.length > 0} onClick={() => void send(true)}>
+          <button className="btn" disabled={busy !== null || liveDraftEnabled || !canStream || validation.errors.length > 0} onClick={() => void send(true)}>
             {busy === "draft" ? "Streaming…" : "Stream 30s draft"}
           </button>
           <button className="btn primary rich-send" disabled={busy !== null || !target.trim() || validation.errors.length > 0 || draftOnly} onClick={() => void send(false)}>

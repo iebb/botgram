@@ -4,6 +4,13 @@ import React, { useState } from "react";
 import { Field, Modal, Select, TextArea, TextInput, Toggle } from "./UI";
 import { useStore } from "./Store";
 import type { TgAny } from "@/lib/types";
+import {
+  albumMediaKind,
+  mediaGroupError,
+  paidMediaError,
+  paidMediaKind,
+} from "@/lib/media";
+import { SelectedMediaGrid } from "./MediaPreview";
 
 export type AttachKind =
   | "photo"
@@ -85,25 +92,33 @@ export default function AttachModal({
   kind,
   base,
   onClose,
+  initialFiles = [],
+  initialCaption = "",
+  initialParseMode = "MarkdownV2",
+  onSent,
 }: {
   kind: AttachKind;
   base: TgAny;
   onClose: () => void;
+  initialFiles?: File[];
+  initialCaption?: string;
+  initialParseMode?: string;
+  onSent?: () => void;
 }) {
   const { call, upload, notify } = useStore();
   const [busy, setBusy] = useState(false);
 
   // shared media source state
   const [source, setSource] = useState<"upload" | "id" | "url">("upload");
-  const [file, setFile] = useState<File | null>(null);
+  const [file, setFile] = useState<File | null>(() => initialFiles[0] || null);
   const [liveVideo, setLiveVideo] = useState<File | null>(null);
   const [liveStill, setLiveStill] = useState<File | null>(null);
   const [liveVideoRef, setLiveVideoRef] = useState("");
   const [liveStillRef, setLiveStillRef] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<File[]>(() => initialFiles);
   const [ref, setRef] = useState("");
-  const [caption, setCaption] = useState("");
-  const [parseMode, setParseMode] = useState("MarkdownV2");
+  const [caption, setCaption] = useState(initialCaption);
+  const [parseMode, setParseMode] = useState(initialParseMode);
   const [spoiler, setSpoiler] = useState(false);
   const [extra, setExtra] = useState<TgAny>(defaultsFor(kind));
 
@@ -157,21 +172,24 @@ export default function AttachModal({
         }
         params = { ...params, ...clean(extra) };
       } else if (kind === "media_group") {
-        if (files.length < 2) return notify("An album needs at least 2 items", "err");
+        const validationError = mediaGroupError(files);
+        if (validationError) return notify(validationError, "err");
         const media = files.map((f, i) => ({
-          type: extra.groupType || "photo",
+          type: albumMediaKind(f),
           media: `attach://f${i}`,
           caption: i === 0 && caption ? caption : undefined,
           parse_mode: i === 0 && caption && parseMode !== "none" ? parseMode : undefined,
-          has_spoiler: spoiler || undefined,
+          has_spoiler:
+            ["photo", "video"].includes(albumMediaKind(f)) && spoiler ? true : undefined,
         }));
         files.forEach((f, i) => (uploads[`f${i}`] = f));
         params.media = media;
       } else if (kind === "paid_media") {
-        if (files.length === 0) return notify("Add at least one file", "err");
+        const validationError = paidMediaError(files);
+        if (validationError) return notify(validationError, "err");
         params.star_count = Number(extra.star_count) || 1;
         params.media = files.map((f, i) => ({
-          type: extra.groupType || "photo",
+          type: paidMediaKind(f)!,
           media: `attach://f${i}`,
         }));
         files.forEach((f, i) => (uploads[`f${i}`] = f));
@@ -238,6 +256,7 @@ export default function AttachModal({
 
       if (res.ok) {
         notify(`${method} ok`);
+        onSent?.();
         onClose();
       }
     } finally {
@@ -249,6 +268,7 @@ export default function AttachModal({
     <Modal
       title={TITLES[kind]}
       onClose={onClose}
+      wide={Boolean(file || files.length)}
       footer={
         <>
           <button className="btn ghost" onClick={onClose}>
@@ -274,14 +294,23 @@ export default function AttachModal({
             />
           </Field>
           {source === "upload" ? (
-            <Field label="File">
-              <input
-                type="file"
-                accept={acceptFor(kind)}
-                onChange={(e) => setFile(e.target.files?.[0] || null)}
-                className="input"
-              />
-            </Field>
+            <>
+              <Field label="File">
+                <input
+                  type="file"
+                  accept={acceptFor(kind)}
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  className="input"
+                />
+              </Field>
+              {file && (
+                <SelectedMediaGrid
+                  files={[file]}
+                  onChange={(next) => setFile(next[0] || null)}
+                  compact
+                />
+              )}
+            </>
           ) : (
             <Field label={source === "id" ? "file_id" : "URL"}>
               <TextInput value={ref} onChange={(e) => setRef(e.target.value)} />
@@ -326,21 +355,32 @@ export default function AttachModal({
 
       {(kind === "media_group" || kind === "paid_media") && (
         <>
-          <Field label="Item type">
-            <Select
-              value={extra.groupType || "photo"}
-              onChange={(e) => setX({ groupType: e.target.value })}
-              options={["photo", "video", "audio", "document"]}
-            />
-          </Field>
-          <Field label="Files (2–10)" hint="All items in an album must be the same type.">
+          <Field
+            label={kind === "media_group" ? "Album files (2–10)" : "Paid photos or videos (up to 10)"}
+            hint={
+              kind === "media_group"
+                ? "Photos and videos can mix. Audio or documents must stay with the same type. Drag previews to reorder."
+                : "Telegram paid media accepts photos and videos. Drag previews to reorder."
+            }
+          >
             <input
               type="file"
               multiple
+              accept={kind === "paid_media" ? "image/*,video/*" : undefined}
               className="input"
-              onChange={(e) => setFiles(Array.from(e.target.files || []))}
+              onChange={(e) => {
+                const selected = Array.from(e.target.files || []);
+                if (selected.length) setFiles((current) => [...current, ...selected]);
+                e.currentTarget.value = "";
+              }}
             />
           </Field>
+          <SelectedMediaGrid files={files} onChange={setFiles} />
+          {(kind === "media_group" ? mediaGroupError(files) : paidMediaError(files)) && (
+            <div className="media-validation-error">
+              {kind === "media_group" ? mediaGroupError(files) : paidMediaError(files)}
+            </div>
+          )}
           {kind === "paid_media" && (
             <Field label="Star price">
               <TextInput
@@ -725,9 +765,8 @@ function defaultsFor(kind: AttachKind): TgAny {
     case "location":
     case "venue":
       return { latitude: 51.5074, longitude: -0.1278 };
-    case "media_group":
     case "paid_media":
-      return { groupType: "photo", star_count: 1 };
+      return { star_count: 1 };
     default:
       return {};
   }
@@ -785,7 +824,7 @@ function clean(o: TgAny): TgAny {
   const out: TgAny = {};
   for (const [k, v] of Object.entries(o)) {
     if (v === "" || v === undefined || v === null) continue;
-    if (k === "groupType" || k === "multi" || k === "tasks") continue;
+    if (k === "multi" || k === "tasks") continue;
     out[k] = v;
   }
   return out;

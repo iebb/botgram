@@ -8,6 +8,7 @@ import AttachModal, { type AttachKind } from "./SendMedia";
 import { messagePreview } from "@/lib/format";
 import type { TgAny } from "@/lib/types";
 import StickerSelector from "./StickerSelector";
+import { attachmentKindForFiles } from "@/lib/media";
 import {
   IconAttach,
   IconBolt,
@@ -83,6 +84,14 @@ const ATTACH_ITEMS: { kind: AttachKind; label: string; Icon: React.ComponentType
   { kind: "game", label: "Game", Icon: IconGift },
 ];
 
+interface AttachDraft {
+  kind: AttachKind;
+  files?: File[];
+  caption?: string;
+  parseMode?: string;
+  consumeComposerText?: boolean;
+}
+
 export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () => void }) {
   const { chat, selectedChatId, call, notify, replyTo, setReplyTo, editing, setEditing } =
     useStore();
@@ -90,7 +99,7 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
   const [text, setText] = useState("");
   const [parseMode, setParseMode] = useState("MarkdownV2");
   const [kb, setKb] = useState<KbDraft>(emptyKb);
-  const [attach, setAttach] = useState<AttachKind | null>(null);
+  const [attach, setAttach] = useState<AttachDraft | null>(null);
   const [showAttach, setShowAttach] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
   const [showStickers, setShowStickers] = useState(false);
@@ -117,6 +126,7 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
   });
 
   const ta = useRef<HTMLTextAreaElement>(null);
+  const mediaPicker = useRef<HTMLInputElement>(null);
   const attachRef = useOutsideClick<HTMLDivElement>(() => setShowAttach(false));
   const emojiRef = useOutsideClick<HTMLDivElement>(() => setShowEmoji(false));
   const stickerRef = useOutsideClick<HTMLDivElement>(() => setShowStickers(false));
@@ -248,6 +258,33 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
     }
   };
 
+  const openSelectedMedia = (files: File[]) => {
+    const kind = attachmentKindForFiles(files);
+    if (!kind) return;
+    if (editing) {
+      notify("Finish editing the current message before attaching media", "err");
+      return;
+    }
+    setShowAttach(false);
+    setShowEmoji(false);
+    setShowStickers(false);
+    setAttach({
+      kind,
+      files,
+      caption: text,
+      parseMode,
+      consumeComposerText: Boolean(text),
+    });
+  };
+
+  const pastedFiles = (event: React.ClipboardEvent<HTMLTextAreaElement>): File[] => {
+    const itemFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    return itemFiles.length ? itemFiles : Array.from(event.clipboardData.files);
+  };
+
   const wrap = (before: string, after: string) => {
     const el = ta.current;
     if (!el) return;
@@ -293,6 +330,17 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
 
   return (
     <>
+      <input
+        ref={mediaPicker}
+        type="file"
+        accept="image/*,video/*"
+        multiple
+        hidden
+        onChange={(event) => {
+          openSelectedMedia(Array.from(event.currentTarget.files || []));
+          event.currentTarget.value = "";
+        }}
+      />
       <div className="composer">
         <div className="composer-box">
           {/* -------------------------------------------- reply / edit bar */}
@@ -468,6 +516,12 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
               rows={1}
               value={text}
               onChange={(e) => setText(e.target.value)}
+              onPaste={(event) => {
+                const files = pastedFiles(event);
+                if (!files.length) return;
+                event.preventDefault();
+                openSelectedMedia(files);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -621,12 +675,27 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
                   className="ctx-menu"
                   style={{ position: "absolute", bottom: "3rem", right: 0, width: "15rem" }}
                 >
+                  <button
+                    className="ctx-item"
+                    onClick={() => {
+                      setShowAttach(false);
+                      mediaPicker.current?.click();
+                    }}
+                  >
+                    <IconPhoto size={17} /> Photos & videos
+                  </button>
+                  <div
+                    style={{
+                      borderTop: "1px solid var(--panel-border)",
+                      margin: "0.25rem 0",
+                    }}
+                  />
                   {ATTACH_ITEMS.map(({ kind, label, Icon }) => (
                     <button
                       key={kind}
                       className="ctx-item"
                       onClick={() => {
-                        setAttach(kind);
+                        setAttach({ kind });
                         setShowAttach(false);
                       }}
                     >
@@ -712,7 +781,19 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
       )}
 
       {attach && (
-        <AttachModal kind={attach} base={baseParams()} onClose={() => setAttach(null)} />
+        <AttachModal
+          kind={attach.kind}
+          base={baseParams()}
+          initialFiles={attach.files}
+          initialCaption={attach.caption}
+          initialParseMode={attach.parseMode}
+          onSent={() => {
+            if (attach.consumeComposerText) setText("");
+            setReplyTo(null);
+            setOpts((current) => ({ ...current, quote: "" }));
+          }}
+          onClose={() => setAttach(null)}
+        />
       )}
     </>
   );

@@ -21,6 +21,13 @@ import type {
 } from "@/lib/types";
 import { avatar, polling as pollingApi, tg, tgUpload, type CallMeta, type TgResult } from "@/lib/client/api";
 import {
+  botFetch,
+  removeBotToken,
+  restoreBotToken,
+  saveBotToken,
+  validBotToken,
+} from "@/lib/client/botToken";
+import {
   browserStorageAvailable,
   clearDashboard,
   clearStickerLibrary,
@@ -292,6 +299,7 @@ interface Ctx {
   clearBrowserHistory: () => Promise<boolean>;
   avatarFileIds: Record<string, string | null>;
   ensureAvatar: (id: number | string, kind: "user" | "chat") => void;
+  refreshAvatar: (id: number | string, kind: "user" | "chat") => Promise<void>;
   stickerLibrary: StickerLibrary;
   rememberStickerSet: (set: TgAny) => void;
   refreshStickerSet: (name: string) => void;
@@ -375,6 +383,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const requireLogin = useCallback(() => {
+    removeBotToken();
+    setAuthStatus("required");
+  }, []);
+
   const cancelPendingStickerSave = useCallback(() => {
     if (stickerSaveTimer.current) {
       clearTimeout(stickerSaveTimer.current);
@@ -449,41 +462,34 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   // --------------------------------------------------------------- auth
   useEffect(() => {
-    let cancelled = false;
-    fetch("/api/auth/session", { cache: "no-store" })
-      .then(async (response) => {
-        const body = (await response.json()) as { authenticated?: boolean };
-        if (!cancelled) setAuthStatus(body.authenticated ? "authenticated" : "required");
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAuthError("Could not reach the Worker. Check your connection and try again.");
-          setAuthStatus("required");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
+    try {
+      setAuthStatus(restoreBotToken() ? "authenticated" : "required");
+    } catch {
+      setAuthError("Browser local storage is unavailable; Humanoid cannot retain the bot token.");
+      setAuthStatus("required");
+    }
   }, []);
 
   const login = useCallback(async (token: string) => {
     setAuthBusy(true);
     setAuthError("");
     try {
-      const response = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token }),
-      });
-      const body = (await response.json()) as TgResult;
-      if (!response.ok || !body.ok) {
-        setAuthError(body.description || "Sign-in failed");
+      const normalized = token.trim();
+      if (!validBotToken(normalized)) {
+        setAuthError("Enter a valid Telegram bot token");
         return false;
       }
+      const response = await botFetch("/api/state", { cache: "no-store" }, normalized);
+      const body = (await response.json()) as AppSnapshot & TgResult;
+      if (!response.ok || !body.me) {
+        setAuthError(body.description || "Telegram rejected this bot token");
+        return false;
+      }
+      saveBotToken(normalized);
       setAuthStatus("authenticated");
       return true;
-    } catch {
-      setAuthError("Could not reach the Worker. Check your connection and try again.");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Could not reach the Worker. Check your connection and try again.");
       return false;
     } finally {
       setAuthBusy(false);
@@ -501,7 +507,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
     void tg<TgAny>("getStickerSet", { name })
       .then((response) => {
-        if (response.error_code === 401) setAuthStatus("required");
+        if (response.error_code === 401) requireLogin();
         if (activeBotIdRef.current !== botId) return;
         if (response.ok && response.result) {
           const set = response.result;
@@ -511,7 +517,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }
       })
       .finally(() => stickerSetRequests.current.delete(requestKey));
-  }, [applyStickerLibrary, notify]);
+  }, [applyStickerLibrary, notify, requireLogin]);
 
   const refreshStickerSet = useCallback((name: string) => {
     requestStickerSet(name, true, true);
@@ -535,7 +541,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
+      removeBotToken();
     } finally {
       cancelPendingSave();
       cancelPendingStickerSave();
@@ -655,10 +661,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     };
 
     connect();
-    void fetch("/api/state", { cache: "no-store" })
+    void botFetch("/api/state", { cache: "no-store" })
       .then(async (response) => {
         if (response.status === 401) {
-          setAuthStatus("required");
+          requireLogin();
           return;
         }
         if (!response.ok) return;
@@ -723,6 +729,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     cancelPendingSave,
     cancelPendingStickerSave,
     rememberStickerMessage,
+    requireLogin,
     requestStickerSet,
     warnBrowserStorage,
   ]);
@@ -843,11 +850,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const call = useCallback(
     async <T,>(method: string, params: TgAny = {}, meta?: CallMeta) => {
       const res = await tg<T>(method, params, meta);
-      if (res.error_code === 401) setAuthStatus("required");
+      if (res.error_code === 401) requireLogin();
       if (!res.ok) notify(`${method}: ${res.description || "failed"}`, "err");
       return res;
     },
-    [notify]
+    [notify, requireLogin]
   );
 
   const upload = useCallback(
@@ -858,11 +865,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       meta?: CallMeta
     ) => {
       const res = await tgUpload<T>(method, params, files, meta);
-      if (res.error_code === 401) setAuthStatus("required");
+      if (res.error_code === 401) requireLogin();
       if (!res.ok) notify(`${method}: ${res.description || "failed"}`, "err");
       return res;
     },
-    [notify]
+    [notify, requireLogin]
   );
 
   const selectedChatType = selectedChatId
@@ -883,13 +890,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     void tg<TgAny>("getChatMember", { chat_id: Number(chatId), user_id: botId }).then((response) => {
       if (cancelled) return;
-      if (response.error_code === 401) setAuthStatus("required");
+      if (response.error_code === 401) requireLogin();
       setBotChatMemberState({ chatId, member: response.ok && response.result ? response.result : null });
     });
     return () => {
       cancelled = true;
     };
-  }, [selectedChatId, selectedChatType, state.me?.id]);
+  }, [requireLogin, selectedChatId, selectedChatType, state.me?.id]);
 
   const ensureAvatar = useCallback((id: number | string, kind: "user" | "chat") => {
     const key = `${kind}:${id}`;
@@ -903,13 +910,23 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const refreshAvatar = useCallback(async (id: number | string, kind: "user" | "chat") => {
+    const key = `${kind}:${id}`;
+    avatarRequests.current.add(key);
+    const result = await avatar(id, kind);
+    setAvatarFileIds((current) => ({
+      ...current,
+      [key]: result.ok ? result.file_id || null : null,
+    }));
+  }, []);
+
   const selectChat = useCallback((id: string | null) => {
     setSelectedChatId(id);
     setReplyTo(null);
     setEditing(null);
     if (id) {
       dispatch({ type: "local_read", chatId: id });
-      void fetch("/api/tg", {
+      void botFetch("/api/tg", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ method: "getChat", params: { chat_id: Number(id) } }),
@@ -956,6 +973,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     clearBrowserHistory,
     avatarFileIds,
     ensureAvatar,
+    refreshAvatar,
     stickerLibrary,
     rememberStickerSet,
     refreshStickerSet,

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_RICH_SOURCES,
+  RICH_HTML_TAGS,
   RICH_TEMPLATES,
   buildInputRichMessage,
+  buildThinkingRichDraft,
   containsThinkingBlock,
   richMediaMarkup,
   validateRichMessage,
@@ -40,8 +42,39 @@ describe("Rich Message Studio payloads", () => {
       "interactive",
       "ai-draft",
     ]);
+    for (const template of RICH_TEMPLATES) {
+      expect(validateRichMessage("html", template.sources.html, false, false, []).errors).toEqual([]);
+      expect(validateRichMessage("markdown", template.sources.markdown, false, false, []).errors).toEqual([]);
+      expect(validateRichMessage("blocks", template.sources.blocks, false, false, []).errors).toEqual([]);
+    }
     expect(containsThinkingBlock("html", "<tg-thinking>Working…</tg-thinking>")).toBe(true);
     expect(containsThinkingBlock("blocks", '[{"type":"thinking","text":"Working"}]')).toBe(true);
+  });
+
+  it("tracks every Bot API 10.2 Rich HTML element and all heading levels", () => {
+    expect(new Set(RICH_HTML_TAGS).size).toBe(RICH_HTML_TAGS.length);
+    expect(RICH_HTML_TAGS).toEqual(expect.arrayContaining([
+      "h1", "h2", "h3", "h4", "h5", "h6",
+      "a", "tg-reference", "tg-emoji", "tg-time", "tg-math",
+      "figure", "figcaption", "tg-map", "tg-collage", "tg-slideshow",
+      "table", "details", "tg-math-block", "tg-thinking",
+    ]));
+  });
+
+  it("adds exactly one trailing thinking block to each live-draft representation", () => {
+    expect(buildThinkingRichDraft("html", "<p>Partial</p>", false, false).html).toBe(
+      "<p>Partial</p>\n<tg-thinking>Thinking…</tg-thinking>"
+    );
+    expect(buildThinkingRichDraft("markdown", "**Partial**", false, false).markdown).toBe(
+      "**Partial**\n<tg-thinking>Thinking…</tg-thinking>"
+    );
+    expect(buildThinkingRichDraft("blocks", '[{"type":"paragraph","text":"Partial"}]', false, false).blocks).toEqual([
+      { type: "paragraph", text: "Partial" },
+      { type: "thinking", text: "Thinking…" },
+    ]);
+    expect(
+      buildThinkingRichDraft("html", "<p>Partial</p><tg-thinking>Working…</tg-thinking>", false, false).html
+    ).toBe("<p>Partial</p><tg-thinking>Working…</tg-thinking>");
   });
 
   it("uses Telegram's three supported rich-media reference schemes", () => {

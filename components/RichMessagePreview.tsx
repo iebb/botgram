@@ -178,10 +178,19 @@ function MarkdownPreview({
 }) {
   const lines = source.split(/\r?\n/);
   const output: React.ReactNode[] = [];
+  const footnotes = new Map<string, string>();
+  for (const line of lines) {
+    const definition = line.match(/^\[\^([^\]]+)\]:\s*(.+)$/);
+    if (definition) footnotes.set(definition[1], definition[2]);
+  }
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];
     if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+    if (/^\[\^[^\]]+\]:\s*/.test(line)) {
       index += 1;
       continue;
     }
@@ -191,13 +200,36 @@ function MarkdownPreview({
       index += 1;
       while (index < lines.length && !/^```/.test(lines[index])) code.push(lines[index++]);
       if (index < lines.length) index += 1;
-      output.push(<pre key={`code-${index}`}><code data-language={language || undefined}>{code.join("\n")}</code></pre>);
+      output.push(
+        language.toLowerCase() === "math"
+          ? <div className="rich-math" key={`math-${index}`}>{code.join("\n")}</div>
+          : <pre key={`code-${index}`}><code data-language={language || undefined}>{code.join("\n")}</code></pre>
+      );
+      continue;
+    }
+    if (/^\s*\$\$/.test(line)) {
+      const expression: string[] = [];
+      const trimmed = line.trim();
+      if (trimmed.length > 4 && trimmed.endsWith("$$")) {
+        expression.push(trimmed.slice(2, -2));
+        index += 1;
+      } else {
+        expression.push(trimmed.slice(2));
+        index += 1;
+        while (index < lines.length && !lines[index].trim().endsWith("$$")) expression.push(lines[index++]);
+        if (index < lines.length) expression.push(lines[index++].trim().replace(/\$\$$/, ""));
+      }
+      output.push(<div className="rich-math" key={`math-${index}`}>{expression.join("\n").trim()}</div>);
       continue;
     }
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       const level = heading[1].length;
-      output.push(React.createElement(`h${level}`, { key: `h-${index}` }, inlineMarkdown(heading[2], `h-${index}`)));
+      output.push(React.createElement(
+        `h${level}`,
+        { key: `h-${index}` },
+        inlineMarkdown(heading[2], `h-${index}`, footnotes, mediaById)
+      ));
       index += 1;
       continue;
     }
@@ -207,8 +239,15 @@ function MarkdownPreview({
       continue;
     }
     if (/^\s*>/.test(line)) {
-      output.push(<blockquote key={`q-${index}`}>{inlineMarkdown(line.replace(/^\s*>\s?/, ""), `q-${index}`)}</blockquote>);
-      index += 1;
+      const quote: React.ReactNode[] = [];
+      const quoteStart = index;
+      while (index < lines.length && /^\s*>/.test(lines[index])) {
+        const text = lines[index].replace(/^\s*>\s?/, "");
+        if (quote.length) quote.push(<br key={`q-br-${index}`} />);
+        quote.push(...inlineMarkdown(text, `q-${index}`, footnotes, mediaById));
+        index += 1;
+      }
+      output.push(<blockquote key={`q-${quoteStart}`}>{quote}</blockquote>);
       continue;
     }
     if (/^\s*[-*+]\s+/.test(line)) {
@@ -216,32 +255,66 @@ function MarkdownPreview({
       while (index < lines.length && /^\s*[-*+]\s+/.test(lines[index])) {
         const raw = lines[index].replace(/^\s*[-*+]\s+/, "");
         const checked = raw.match(/^\[([ xX])\]\s+(.*)$/);
-        items.push(<li key={`li-${index}`} className={checked ? "rich-check-item" : undefined}>{checked && <input type="checkbox" checked={checked[1].toLowerCase() === "x"} readOnly />}<span>{inlineMarkdown(checked ? checked[2] : raw, `li-${index}`)}</span></li>);
+        items.push(<li key={`li-${index}`} className={checked ? "rich-check-item" : undefined}>{checked && <input type="checkbox" checked={checked[1].toLowerCase() === "x"} readOnly />}<span>{inlineMarkdown(checked ? checked[2] : raw, `li-${index}`, footnotes, mediaById)}</span></li>);
         index += 1;
       }
       output.push(<ul className="rich-list" key={`ul-${index}`}>{items}</ul>);
+      continue;
+    }
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const items: React.ReactNode[] = [];
+      const start = Number(line.match(/^\s*(\d+)/)?.[1]) || 1;
+      while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
+        const raw = lines[index].replace(/^\s*\d+[.)]\s+/, "");
+        items.push(<li key={`oli-${index}`}>{inlineMarkdown(raw, `oli-${index}`, footnotes, mediaById)}</li>);
+        index += 1;
+      }
+      output.push(<ol className="rich-list" start={start} key={`ol-${index}`}>{items}</ol>);
+      continue;
+    }
+    const media = line.trim().match(/^!\[([^\]]*)\]\((\S+?)(?:\s+["']([^"']*)["'])?\)$/);
+    if (media) {
+      output.push(renderMarkdownMedia(media[2], media[3] || media[1], `media-${index}`, mediaById));
+      index += 1;
       continue;
     }
     if (line.includes("|") && index + 1 < lines.length && /^\s*\|?\s*:?-+/.test(lines[index + 1])) {
       const rows: string[][] = [tableCells(line)];
       index += 2;
       while (index < lines.length && lines[index].includes("|") && lines[index].trim()) rows.push(tableCells(lines[index++]));
-      output.push(<div className="rich-table-wrap" key={`table-${index}`}><table className="bordered striped"><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => rowIndex === 0 ? <th key={cellIndex}>{inlineMarkdown(cell, `th-${rowIndex}-${cellIndex}`)}</th> : <td key={cellIndex}>{inlineMarkdown(cell, `td-${rowIndex}-${cellIndex}`)}</td>)}</tr>)}</tbody></table></div>);
+      output.push(<div className="rich-table-wrap" key={`table-${index}`}><table className="bordered striped"><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => rowIndex === 0 ? <th key={cellIndex}>{inlineMarkdown(cell, `th-${rowIndex}-${cellIndex}`, footnotes, mediaById)}</th> : <td key={cellIndex}>{inlineMarkdown(cell, `td-${rowIndex}-${cellIndex}`, footnotes, mediaById)}</td>)}</tr>)}</tbody></table></div>);
       continue;
     }
     if (/^\s*</.test(line)) {
-      output.push(<HtmlFragment key={`html-${index}`} source={line} mediaById={mediaById} />);
-      index += 1;
+      const block = collectHtmlBlock(lines, index);
+      output.push(<HtmlFragment key={`html-${index}`} source={block.source} mediaById={mediaById} />);
+      index = block.nextIndex;
       continue;
     }
-    output.push(<p key={`p-${index}`}>{inlineMarkdown(line, `p-${index}`)}</p>);
+    output.push(<p key={`p-${index}`}>{inlineMarkdown(line, `p-${index}`, footnotes, mediaById)}</p>);
     index += 1;
+  }
+  if (footnotes.size) {
+    output.push(
+      <ol className="rich-footnotes" key="footnotes">
+        {Array.from(footnotes).map(([id, definition]) => (
+          <li key={id} id={`footnote-${id}`}>
+            {inlineMarkdown(definition, `footnote-${id}`, footnotes, mediaById)}
+          </li>
+        ))}
+      </ol>
+    );
   }
   return <div className="rich-message" dir={rtl ? "rtl" : undefined}>{output}</div>;
 }
 
-function inlineMarkdown(value: string, key: string): React.ReactNode[] {
-  const pattern = /(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\|\|[^|]+\|\||`[^`]+`|\[[^\]]+\]\([^\s)]+\)|==[^=]+==|_[^_]+_)/g;
+function inlineMarkdown(
+  value: string,
+  key: string,
+  footnotes = new Map<string, string>(),
+  mediaById = new Map<string, string>()
+): React.ReactNode[] {
+  const pattern = /(!\[[^\]]*\]\(tg:\/\/(?:emoji|time)\?[^)]+\)|\[\^[^\]]+\]|\*\*.+?\*\*|__.+?__|~~.+?~~|\|\|.+?\|\||`[^`]+`|==.+?==|\[[^\]]+\]\([^\s)]+\)|<([a-z][a-z0-9-]*)\b[^>]*>.*?<\/\2>|(?<!\*)\*[^*]+\*(?!\*)|_[^_]+_|\$[^$\n]+\$)/gi;
   const nodes: React.ReactNode[] = [];
   let cursor = 0;
   let index = 0;
@@ -249,21 +322,80 @@ function inlineMarkdown(value: string, key: string): React.ReactNode[] {
     const start = match.index ?? 0;
     if (start > cursor) nodes.push(value.slice(cursor, start));
     const token = match[0];
-    if (token.startsWith("**") || token.startsWith("__")) nodes.push(<strong key={`${key}-${index}`}>{token.slice(2, -2)}</strong>);
-    else if (token.startsWith("~~")) nodes.push(<s key={`${key}-${index}`}>{token.slice(2, -2)}</s>);
-    else if (token.startsWith("||")) nodes.push(<PreviewSpoiler key={`${key}-${index}`}>{token.slice(2, -2)}</PreviewSpoiler>);
+    if (token.startsWith("**") || token.startsWith("__")) nodes.push(<strong key={`${key}-${index}`}>{inlineMarkdown(token.slice(2, -2), `${key}-${index}-strong`, footnotes, mediaById)}</strong>);
+    else if (token.startsWith("~~")) nodes.push(<s key={`${key}-${index}`}>{inlineMarkdown(token.slice(2, -2), `${key}-${index}-strike`, footnotes, mediaById)}</s>);
+    else if (token.startsWith("||")) nodes.push(<PreviewSpoiler key={`${key}-${index}`}>{inlineMarkdown(token.slice(2, -2), `${key}-${index}-spoiler`, footnotes, mediaById)}</PreviewSpoiler>);
     else if (token.startsWith("`")) nodes.push(<code className="tg-code" key={`${key}-${index}`}>{token.slice(1, -1)}</code>);
-    else if (token.startsWith("==")) nodes.push(<mark key={`${key}-${index}`}>{token.slice(2, -2)}</mark>);
+    else if (token.startsWith("==")) nodes.push(<mark key={`${key}-${index}`}>{inlineMarkdown(token.slice(2, -2), `${key}-${index}-mark`, footnotes, mediaById)}</mark>);
+    else if (token.startsWith("![")) {
+      const embedded = token.match(/^!\[([^\]]*)\]\((tg:\/\/(?:emoji|time)\?[^)]+)\)$/);
+      const alt = embedded?.[1] || "";
+      nodes.push(embedded?.[2].startsWith("tg://time?")
+        ? <time key={`${key}-${index}`} title={embedded[2]}>{alt || "Formatted time"}</time>
+        : <span key={`${key}-${index}`} title={embedded?.[2]}>{alt || "◻︎"}</span>);
+    }
+    else if (token.startsWith("[^")) {
+      const id = token.slice(2, -1);
+      nodes.push(<sup className="rich-footnote-ref" key={`${key}-${index}`} title={footnotes.get(id)}><a href={`#footnote-${id}`}>[{id}]</a></sup>);
+    }
     else if (token.startsWith("[")) {
       const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
       const href = safeHref(link?.[2] || "");
       nodes.push(href ? <a key={`${key}-${index}`} href={href} target="_blank" rel="noreferrer">{link?.[1]}</a> : token);
-    } else nodes.push(<em key={`${key}-${index}`}>{token.slice(1, -1)}</em>);
+    } else if (token.startsWith("<")) {
+      nodes.push(<HtmlFragment key={`${key}-${index}`} source={token} mediaById={mediaById} />);
+    } else if (token.startsWith("$")) {
+      nodes.push(<code className="rich-inline-math" key={`${key}-${index}`}>{token.slice(1, -1)}</code>);
+    } else nodes.push(<em key={`${key}-${index}`}>{inlineMarkdown(token.slice(1, -1), `${key}-${index}-em`, footnotes, mediaById)}</em>);
     cursor = start + token.length;
     index += 1;
   }
   if (cursor < value.length) nodes.push(value.slice(cursor));
   return nodes;
+}
+
+function renderMarkdownMedia(
+  rawSource: string,
+  caption: string,
+  key: string,
+  mediaById: Map<string, string>
+): React.ReactNode {
+  if (/^tg:\/(?:emoji|time)\?/i.test(rawSource)) {
+    return <p key={key}>{caption || (rawSource.startsWith("tg://time?") ? "Formatted time" : "◻︎")}</p>;
+  }
+  const source = previewSource(rawSource, mediaById);
+  if (!source) return <div className="rich-preview-error" key={key}>Media source is unavailable</div>;
+  const path = rawSource.toLowerCase().split(/[?#]/, 1)[0];
+  const video = rawSource.startsWith("tg://video?") || /\.(?:mp4|webm|mov|m4v|gif)$/.test(path);
+  const audio = rawSource.startsWith("tg://audio?") || /\.(?:mp3|m4a|aac|wav|ogg|oga|opus|flac)$/.test(path);
+  return (
+    <figure key={key}>
+      {video ? (
+        <video className="rich-media" src={source} controls muted playsInline />
+      ) : audio ? (
+        <audio src={source} controls />
+      ) : (
+        // Dynamic Rich Message sources cannot use Next's static image optimizer.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img className="rich-media" src={source} alt={caption || "Rich media preview"} />
+      )}
+      {caption && <figcaption>{caption}</figcaption>}
+    </figure>
+  );
+}
+
+function collectHtmlBlock(lines: string[], start: number): { source: string; nextIndex: number } {
+  const first = lines[start];
+  const tag = first.trim().match(/^<(details|tg-collage|tg-slideshow|table|figure|blockquote|aside|ul|ol)\b/i)?.[1];
+  if (!tag || new RegExp(`</${tag}>`, "i").test(first)) return { source: first, nextIndex: start + 1 };
+  const collected = [first];
+  let index = start + 1;
+  while (index < lines.length) {
+    collected.push(lines[index]);
+    index += 1;
+    if (new RegExp(`</${tag}>`, "i").test(collected.at(-1) || "")) break;
+  }
+  return { source: collected.join("\n"), nextIndex: index };
 }
 
 function PreviewSpoiler({ children }: { children: React.ReactNode }) {

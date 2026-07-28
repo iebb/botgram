@@ -28,7 +28,7 @@ export default function LoginScreen() {
           <div className="login-checking"><span className="dot on" /> Checking your session…</div>
         ) : (
           <form onSubmit={submit}>
-            <label htmlFor="bot-token">Bot token from the local <code>.env</code></label>
+            <label htmlFor="bot-token">Telegram bot token</label>
             <input
               id="bot-token"
               className="input login-token"
@@ -48,9 +48,9 @@ export default function LoginScreen() {
         )}
 
         <div className="login-security">
-          The token is checked at the edge and exchanged for a signed, HTTP-only session.
-          Humanoid never writes it to browser storage; chat state is saved separately in this
-          device's IndexedDB.
+          The token is saved only in this browser&apos;s local storage. Requests pass it through the
+          Worker to Telegram, but the Worker has no token secret, session database, or credential
+          storage. Chat state remains separate in this device&apos;s IndexedDB.
         </div>
       </div>
     </main>

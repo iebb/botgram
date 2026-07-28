@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import "@fontsource-variable/google-sans-flex/wght.css";
 import "./globals.css";
 
 export const metadata: Metadata = {

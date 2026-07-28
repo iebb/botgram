@@ -44,7 +44,8 @@ then coalesces snapshots into IndexedDB. Per-bot chats, messages, incoming updat
 payloads, queries, redacted API activity, resolved avatar file IDs, the selected
 chat, discovered sticker-set metadata, local sticker-use frequency, and Rich Studio
 drafts survive reloads on that browser. Theme choice is also local. The bot token,
-sticker files, and uploaded file bytes are never written to IndexedDB.
+sticker files, and uploaded file bytes are never written to IndexedDB. The bot
+token is intentionally kept in a separate localStorage entry.
 
 The retained event collections are bounded to 500 messages per chat, 300 raw
 updates, 300 API entries, and 200 queries. Browser storage remains device-local and
@@ -57,11 +58,11 @@ Cloudflare Worker logs and traces are disabled. Telegram files are returned with
 `Cache-Control: private, no-store`; only their reusable Telegram file IDs are
 memoized locally.
 
-The unavoidable server-side state is narrowly scoped: the bot token is a
-Cloudflare secret, Telegram retains data according to Telegram's own service
-behavior, and the browser holds a signed session cookie until the browser session
-closes. The cookie contains no bot token and expires cryptographically after 24
-hours.
+The Worker has no bot-token binding, credential database, or server session. The
+browser sends its local token on each API request. A session-only, same-origin
+browser cookie mirrors it solely for native image/video/audio requests and the
+browser WebSocket, which cannot set an Authorization header. The Worker consumes
+the credential transiently and never persists or logs it.
 
 IndexedDB is not a Bot API history source. This dashboard only saves updates that
 reach an open browser and Message results from its own API calls. With the
@@ -78,11 +79,13 @@ most 24 hours), not legacy chats or arbitrary message history.
   locally retained sticker messages, hydrates complete sets through the Bot API,
   and sorts both sets and stickers by browser-local use frequency. Animation code
   and sticker files load only when visible.
-- A dedicated Rich Message Studio with a Notion-style WYSIWYG canvas: draggable
+- A dedicated Rich Message Studio with a Notion-style WYSIWYG Block Editor: draggable
   blocks, slash commands, per-block context menus, duplicate/delete/move/transform
   actions, rich paste sanitization, inline formatting, HTML source, Rich Markdown,
-  native blocks, media, keyboard editing, validation, import/export, and streaming
-  drafts. Draft configuration autosaves per bot in IndexedDB; import/export still
+  native blocks, media, rendered keyboard previews, validation, import/export,
+  manual streaming, and an opt-in live draft that republishes unfinished input
+  with a native Thinking block every three seconds. Draft configuration autosaves
+  per bot in IndexedDB; import/export still
   happens only when the operator explicitly chooses a file, and upload bytes stay
   session-only.
 - Lazy user/chat avatar resolution through Telegram. File IDs are memoized only in
@@ -95,15 +98,17 @@ most 24 hours), not legacy chats or arbitrary message history.
 
 ## Security
 
-`BOT_TOKEN` stays in the ignored `.env` file locally and in a Worker secret in
-production. It is never included in the static bundle or browser storage. Login
-uses constant-time verification and returns an `HttpOnly`, `Secure`,
-`SameSite=Strict` session cookie. Mutation routes require same-origin requests.
+The bot token is saved in browser localStorage only after Telegram accepts it. It
+is never included in the static bundle, Wrangler configuration, Worker secrets,
+Durable Object storage, logs, or application databases. A session-only
+`SameSite=Strict` transport cookie enables authenticated native media and
+WebSockets. Mutation routes also require same-origin requests.
 
-The Telegram webhook validates a secret derived from `BOT_TOKEN`. Uploads and
-downloads stream through authenticated routes. Known secret fields are redacted
-before transient API events reach the browser, and managed-bot credentials appear
-only in the immediate console response.
+Each webhook installation creates a fresh random secret. Its one-way digest is in
+the webhook route, so incoming deliveries can be verified without storing the
+secret or bot token. Uploads and downloads stream through authenticated routes.
+Known secret fields are redacted before transient API events reach the browser,
+and managed-bot credentials appear only in the immediate console response.
 
 ## Development and deployment
 
@@ -114,14 +119,18 @@ npm test
 npm run typecheck
 npm run build
 npx wrangler deploy --dry-run
-CLOUDFLARE_ACCOUNT_ID=<ieb-account-id> npx wrangler deploy --secrets-file .env
+CLOUDFLARE_ACCOUNT_ID=<ieb-account-id> npx wrangler deploy
 HUMANOID_URL=https://<deployment> npm run verify:live
 ```
+
+The ignored `.env` supplies `BOT_TOKEN` only to local verification commands. Do
+not upload it with Wrangler; production has no bot-token secret.
 
 `npm run dev:worker` serves the exported UI and Worker locally on port 3838. After
 deployment, choose **Updates -> Restore webhook** if Telegram delivery needs to be
 installed or repaired.
 
-The live verifier authenticates, checks that `/api/state` begins empty, exercises
+The live verifier passes the ignored `.env` token per request, checks that
+`/api/state` begins empty, exercises
 the Bot API proxy and avatar resolver, verifies the WebSocket and webhook, and does
 not send a Telegram message.

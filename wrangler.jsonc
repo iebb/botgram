@@ -14,7 +14,7 @@
     "TELEGRAM_API_ROOT": "https://api.telegram.org"
   },
   "secrets": {
-    "required": ["BOT_TOKEN"]
+    "required": []
   },
   "durable_objects": {
     "bindings": [

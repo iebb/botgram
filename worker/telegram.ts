@@ -22,14 +22,14 @@ export function cleanParams(params: TelegramParams): TelegramParams {
   return result;
 }
 
-export function telegramApiUrl(env: Env, method: string): string {
+export function telegramApiUrl(env: Env, botToken: string, method: string): string {
   const root = env.TELEGRAM_API_ROOT.replace(/\/$/, "");
-  return `${root}/bot${env.BOT_TOKEN}/${method}`;
+  return `${root}/bot${botToken}/${method}`;
 }
 
-export function telegramFileUrl(env: Env, path: string): string {
+export function telegramFileUrl(env: Env, botToken: string, path: string): string {
   const root = env.TELEGRAM_API_ROOT.replace(/\/$/, "");
-  return `${root}/file/bot${env.BOT_TOKEN}/${path}`;
+  return `${root}/file/bot${botToken}/${path}`;
 }
 
 async function readTelegramResponse<T>(response: Response): Promise<TelegramResponse<T>> {
@@ -55,12 +55,13 @@ async function readTelegramResponse<T>(response: Response): Promise<TelegramResp
 
 export async function callTelegramJson<T = unknown>(
   env: Env,
+  botToken: string,
   method: string,
   params: TelegramParams = {}
 ): Promise<{ response: TelegramResponse<T>; elapsedMs: number }> {
   const startedAt = Date.now();
   try {
-    const upstream = await fetch(telegramApiUrl(env, method), {
+    const upstream = await fetch(telegramApiUrl(env, botToken, method), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(cleanParams(params)),
@@ -83,6 +84,7 @@ export async function callTelegramJson<T = unknown>(
 /** Forward a Telegram-ready multipart body without buffering uploaded media in Worker memory. */
 export async function callTelegramMultipart<T = unknown>(
   env: Env,
+  botToken: string,
   method: string,
   request: Request
 ): Promise<{ response: TelegramResponse<T>; elapsedMs: number }> {
@@ -96,7 +98,7 @@ export async function callTelegramMultipart<T = unknown>(
   }
 
   try {
-    const upstream = await fetch(telegramApiUrl(env, method), {
+    const upstream = await fetch(telegramApiUrl(env, botToken, method), {
       method: "POST",
       headers: { "content-type": contentType },
       body: request.body,

@@ -115,6 +115,69 @@ export function buildReplyMarkup(kb: KbDraft): TgAny | undefined {
   }
 }
 
+/** Telegram-like, non-interactive rendering used by the Rich Studio preview. */
+export function KeyboardPreview({ value }: { value: KbDraft }) {
+  if (value.mode === "none") return null;
+  if (value.mode === "remove" || value.mode === "force") {
+    return (
+      <div className="keyboard-preview-state">
+        {value.mode === "remove" ? "Reply keyboard will be removed" : `Force reply${value.placeholder ? ` · ${value.placeholder}` : ""}`}
+      </div>
+    );
+  }
+
+  const rows = value.rows
+    .map((row) => row.filter((button) => button.text.trim()))
+    .filter((row) => row.length);
+  if (!rows.length) return null;
+
+  return (
+    <div className={`keyboard-preview ${value.mode}`} aria-label={`${value.mode} keyboard preview`}>
+      {value.mode === "reply" && <div className="keyboard-preview-label">Reply keyboard</div>}
+      {rows.map((row, rowIndex) => (
+        <div
+          key={rowIndex}
+          className="keyboard-preview-row"
+          style={{ gridTemplateColumns: `repeat(${row.length}, minmax(0, 1fr))` }}
+        >
+          {row.map((button, buttonIndex) => (
+            <div
+              key={buttonIndex}
+              className="keyboard-preview-button"
+              title={buttonPreviewTitle(button)}
+              aria-disabled="true"
+            >
+              <span className="truncate-1">{button.text}</span>
+              {buttonPreviewGlyph(button.kind) && (
+                <small aria-hidden>{buttonPreviewGlyph(button.kind)}</small>
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+      {value.mode === "reply" && value.placeholder && (
+        <div className="keyboard-preview-placeholder">{value.placeholder}</div>
+      )}
+    </div>
+  );
+}
+
+function buttonPreviewGlyph(kind: string): string {
+  if (["url", "web_app", "login_url", "switch_inline_query", "switch_inline_query_current_chat", "switch_inline_query_chosen_chat"].includes(kind)) return "↗";
+  if (kind === "copy_text") return "⧉";
+  if (kind === "pay") return "⭐";
+  if (kind === "callback_game") return "🎮";
+  if (kind === "request_contact") return "☏";
+  if (kind === "request_location") return "⌖";
+  if (kind.startsWith("request_")) return "+";
+  return "";
+}
+
+function buttonPreviewTitle(button: BtnDraft): string {
+  const detail = button.value || button.value2;
+  return detail ? `${button.kind}: ${detail}` : button.kind.replaceAll("_", " ");
+}
+
 function inlineButton(b: BtnDraft): TgAny | null {
   if (!b.text.trim()) return null;
   const base: TgAny = { text: b.text };

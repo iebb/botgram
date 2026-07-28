@@ -4,6 +4,8 @@ import React, { useState } from "react";
 import { useStore } from "../Store";
 import { Avatar, Collapsible, Field, Json, Select, TextArea, TextInput, Toggle } from "../UI";
 import type { TgAny } from "@/lib/types";
+import { profilePhotoKind } from "@/lib/media";
+import { SelectedMediaGrid } from "../MediaPreview";
 
 const SCOPES = [
   "default",
@@ -62,6 +64,7 @@ export default function BotPanel() {
         </button>
       </div>
 
+      <AvatarManager onResult={setResult} />
       <Identity run={run} />
       <Commands run={run} />
       <MenuButton run={run} />
@@ -80,6 +83,139 @@ export default function BotPanel() {
 }
 
 type Run = (method: string, params?: TgAny, okMsg?: string) => Promise<void>;
+
+function AvatarManager({ onResult }: { onResult: (value: unknown) => void }) {
+  const { state, call, upload, notify, refreshAvatar } = useStore();
+  const [file, setFile] = useState<File | null>(null);
+  const [mainFrame, setMainFrame] = useState("0");
+  const [busy, setBusy] = useState<"set" | "remove" | "refresh" | null>(null);
+  const kind = file ? profilePhotoKind(file) : null;
+
+  const refresh = async () => {
+    if (!state.me?.id) return;
+    setBusy("refresh");
+    try {
+      await refreshAvatar(state.me.id, "user");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const setPhoto = async () => {
+    if (!file || !kind || !state.me?.id) {
+      return notify("Choose an image or an MPEG-4 video first", "err");
+    }
+    setBusy("set");
+    try {
+      const prepared = kind === "static" ? await jpegProfilePhoto(file) : file;
+      const field = kind === "static" ? "profile_photo" : "profile_animation";
+      const photo = kind === "static"
+        ? { type: "static", photo: `attach://${field}` }
+        : {
+            type: "animated",
+            animation: `attach://${field}`,
+            main_frame_timestamp: Number(mainFrame) || undefined,
+          };
+      const response = await upload("setMyProfilePhoto", { photo }, { [field]: prepared });
+      onResult(response.ok ? response.result : response);
+      if (!response.ok) return;
+      notify(kind === "static" ? "Bot profile photo updated" : "Animated bot profile photo updated");
+      setFile(null);
+      await refreshAvatar(state.me.id, "user");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not prepare this profile photo", "err");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const removePhoto = async () => {
+    if (!state.me?.id || !window.confirm("Remove the bot's current profile photo?")) return;
+    setBusy("remove");
+    try {
+      const response = await call("removeMyProfilePhoto");
+      onResult(response.ok ? response.result : response);
+      if (!response.ok) return;
+      notify("Bot profile photo removed");
+      setFile(null);
+      await refreshAvatar(state.me.id, "user");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Collapsible title="Profile photo" defaultOpen>
+      <Field
+        label="New avatar"
+        hint="Images are converted to JPG in this browser. MP4 creates an animated profile photo. Upload bytes are not saved by Humanoid."
+      >
+        <input
+          className="input"
+          type="file"
+          accept="image/*,video/mp4,.mp4"
+          onChange={(event) => setFile(event.currentTarget.files?.[0] || null)}
+        />
+      </Field>
+      {file && <SelectedMediaGrid files={[file]} onChange={(next) => setFile(next[0] || null)} compact />}
+      {file && !kind && (
+        <div className="media-validation-error">Use an image or an MPEG-4 (.mp4) video.</div>
+      )}
+      {kind === "animated" && (
+        <Field label="Main frame timestamp" hint="Seconds into the MP4 used for the static thumbnail.">
+          <TextInput
+            type="number"
+            min="0"
+            step="0.1"
+            value={mainFrame}
+            onChange={(event) => setMainFrame(event.target.value)}
+          />
+        </Field>
+      )}
+      <div style={{ display: "flex", gap: "0.375rem", flexWrap: "wrap" }}>
+        <button className="btn sm primary" disabled={!file || !kind || busy !== null} onClick={() => void setPhoto()}>
+          {busy === "set" ? "Uploading…" : "Set profile photo"}
+        </button>
+        <button className="btn sm" disabled={busy !== null} onClick={() => void refresh()}>
+          {busy === "refresh" ? "Refreshing…" : "Refresh photo"}
+        </button>
+        <button className="btn sm danger" disabled={busy !== null} onClick={() => void removePhoto()}>
+          {busy === "remove" ? "Removing…" : "Remove current photo"}
+        </button>
+      </div>
+    </Collapsible>
+  );
+}
+
+async function jpegProfilePhoto(file: File): Promise<File> {
+  if (file.type === "image/jpeg" || /\.jpe?g$/i.test(file.name)) return file;
+  const bitmap = await createImageBitmap(file);
+  try {
+    const longest = Math.max(bitmap.width, bitmap.height);
+    const scale = longest > 4096 ? 4096 / longest : 1;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("This browser cannot convert the selected image");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (value) => value ? resolve(value) : reject(new Error("Could not convert the selected image to JPG")),
+        "image/jpeg",
+        0.92
+      );
+    });
+    return new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", {
+      type: "image/jpeg",
+      lastModified: Date.now(),
+    });
+  } finally {
+    bitmap.close();
+  }
+}
 
 function Identity({ run }: { run: Run }) {
   const [lang, setLang] = useState("");

@@ -6,6 +6,7 @@ import { Field, Json, TextInput, Toggle } from "../UI";
 import { ALL_UPDATE_TYPES } from "@/lib/updateTypes";
 import type { TgResult } from "@/lib/client/api";
 import GroupPrivacyWarning from "../GroupPrivacyWarning";
+import { botFetch } from "@/lib/client/botToken";
 
 export default function WebhookPanel() {
   const { call, notify, upload } = useStore();
@@ -47,7 +48,7 @@ export default function WebhookPanel() {
         <button
           className="btn sm primary"
           onClick={async () => {
-            const response = await fetch("/api/webhook/install", { method: "POST" });
+            const response = await botFetch("/api/webhook/install", { method: "POST" });
             const result = (await response.json()) as TgResult;
             notify(result.ok ? "Humanoid webhook restored" : result.description || "Restore failed", result.ok ? "ok" : "err");
             if (result.ok) refresh();

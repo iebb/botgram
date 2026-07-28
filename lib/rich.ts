@@ -3,6 +3,64 @@ import type { TgAny } from "./types";
 export type RichMode = "html" | "markdown" | "blocks";
 export type RichMediaKind = "photo" | "video" | "animation" | "audio" | "voice_note";
 
+/** Every element accepted by Bot API 10.2 Rich HTML, including draft-only thinking. */
+export const RICH_HTML_TAGS = [
+  "a",
+  "b",
+  "strong",
+  "i",
+  "em",
+  "u",
+  "ins",
+  "s",
+  "strike",
+  "del",
+  "code",
+  "mark",
+  "sub",
+  "sup",
+  "tg-spoiler",
+  "tg-reference",
+  "tg-emoji",
+  "tg-time",
+  "tg-math",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "p",
+  "pre",
+  "footer",
+  "hr",
+  "ul",
+  "ol",
+  "li",
+  "input",
+  "blockquote",
+  "aside",
+  "cite",
+  "img",
+  "video",
+  "audio",
+  "figure",
+  "figcaption",
+  "tg-map",
+  "tg-collage",
+  "tg-slideshow",
+  "table",
+  "caption",
+  "tr",
+  "th",
+  "td",
+  "details",
+  "summary",
+  "tg-math-block",
+  "tg-thinking",
+  "br",
+] as const;
+
 export interface RichMediaDescriptor {
   id: string;
   field: string;
@@ -74,15 +132,14 @@ export const RICH_TEMPLATES: Array<{
   id: string;
   label: string;
   description: string;
-  mode: RichMode;
-  content: string;
+  sources: RichSources;
 }> = [
   {
     id: "announcement",
     label: "Announcement",
     description: "Heading, callout, checklist, and details",
-    mode: "html",
-    content: `<h1>Product update</h1>
+    sources: {
+      html: `<h1>Product update</h1>
 <p>We just shipped <b>something worth sharing</b>.</p>
 <aside>Fast, focused, and available now.<cite>Your team</cite></aside>
 <h3>What changed</h3>
@@ -91,13 +148,45 @@ export const RICH_TEMPLATES: Array<{
   <li><input type="checkbox" checked> Second improvement</li>
 </ul>
 <details><summary>Release notes</summary><p>Add the full details here.</p></details>`,
+      markdown: `# Product update
+
+We just shipped **something worth sharing**.
+
+<aside>Fast, focused, and available now.<cite>Your team</cite></aside>
+
+### What changed
+- [x] First improvement
+- [x] Second improvement
+
+<details><summary>Release notes</summary>Add the full details here.</details>`,
+      blocks: JSON.stringify([
+        { type: "heading", size: 1, text: "Product update" },
+        { type: "paragraph", text: ["We just shipped ", { type: "bold", text: "something worth sharing" }, "."] },
+        { type: "pullquote", text: "Fast, focused, and available now.", credit: "Your team" },
+        { type: "heading", size: 3, text: "What changed" },
+        {
+          type: "list",
+          items: [
+            { has_checkbox: true, is_checked: true, blocks: [{ type: "paragraph", text: "First improvement" }] },
+            { has_checkbox: true, is_checked: true, blocks: [{ type: "paragraph", text: "Second improvement" }] },
+          ],
+        },
+        { type: "details", summary: "Release notes", blocks: [{ type: "paragraph", text: "Add the full details here." }] },
+      ], null, 2),
+    },
   },
   {
     id: "status",
     label: "Status report",
     description: "Structured metrics and progress",
-    mode: "markdown",
-    content: `## Weekly status
+    sources: {
+      html: `<h2>Weekly status</h2>
+<p><b>Overall:</b> On track ✅</p>
+<table bordered striped><tr><th>Workstream</th><th>State</th><th>Owner</th></tr><tr><td>Product</td><td><b>Green</b></td><td>Team A</td></tr><tr><td>Operations</td><td><b>Green</b></td><td>Team B</td></tr></table>
+<h3>Highlights</h3>
+<ul><li><input type="checkbox" checked> Completed milestone</li><li><input type="checkbox"> Next milestone</li></ul>
+<blockquote>Add risks, decisions, and next actions here.</blockquote>`,
+      markdown: `## Weekly status
 
 **Overall:** On track ✅
 
@@ -111,31 +200,74 @@ export const RICH_TEMPLATES: Array<{
 - [ ] Next milestone
 
 > Add risks, decisions, and next actions here.`,
+      blocks: JSON.stringify([
+        { type: "heading", size: 2, text: "Weekly status" },
+        { type: "paragraph", text: [{ type: "bold", text: "Overall:" }, " On track ✅"] },
+        {
+          type: "table",
+          is_bordered: true,
+          is_striped: true,
+          cells: [
+            [{ text: "Workstream", is_header: true }, { text: "State", is_header: true }, { text: "Owner", is_header: true }],
+            [{ text: "Product" }, { text: { type: "bold", text: "Green" } }, { text: "Team A" }],
+            [{ text: "Operations" }, { text: { type: "bold", text: "Green" } }, { text: "Team B" }],
+          ],
+        },
+        { type: "heading", size: 3, text: "Highlights" },
+        {
+          type: "list",
+          items: [
+            { has_checkbox: true, is_checked: true, blocks: [{ type: "paragraph", text: "Completed milestone" }] },
+            { has_checkbox: true, blocks: [{ type: "paragraph", text: "Next milestone" }] },
+          ],
+        },
+        { type: "blockquote", blocks: [{ type: "paragraph", text: "Add risks, decisions, and next actions here." }] },
+      ], null, 2),
+    },
   },
   {
     id: "interactive",
     label: "Interactive card",
     description: "Native blocks designed for a keyboard",
-    mode: "blocks",
-    content: JSON.stringify(
-      [
+    sources: {
+      html: `<h2>Choose an action</h2>
+<p>Use the keyboard editor to add callbacks, links, Web Apps, or copy buttons.</p>
+<hr>
+<footer>The keyboard is sent with the rich message.</footer>`,
+      markdown: `## Choose an action
+
+Use the keyboard editor to add callbacks, links, Web Apps, or copy buttons.
+
+---
+
+<footer>The keyboard is sent with the rich message.</footer>`,
+      blocks: JSON.stringify([
         { type: "heading", size: 2, text: "Choose an action" },
         { type: "paragraph", text: "Use the keyboard editor to add callbacks, links, Web Apps, or copy buttons." },
         { type: "divider" },
         { type: "footer", text: "The keyboard is sent with the rich message." },
-      ],
-      null,
-      2
-    ),
+      ], null, 2),
+    },
   },
   {
     id: "ai-draft",
     label: "Streaming answer",
     description: "A temporary 30-second AI-style draft",
-    mode: "html",
-    content: `<h2>Working on your answer</h2>
+    sources: {
+      html: `<h2>Working on your answer</h2>
 <tg-thinking>Checking the latest information…</tg-thinking>
 <p>The partial response can be replaced under the same <code>draft_id</code>.</p>`,
+      markdown: `## Working on your answer
+
+<tg-thinking>Checking the latest information…</tg-thinking>
+
+The partial response can be replaced under the same \`draft_id\`.`,
+      blocks: JSON.stringify([
+        { type: "heading", size: 2, text: "Working on your answer" },
+        { type: "thinking", text: "Checking the latest information…" },
+        { type: "paragraph", text: ["The partial response can be replaced under the same ", { type: "code", text: "draft_id" }, "."] },
+      ], null, 2),
+    },
   },
 ];
 
@@ -231,6 +363,40 @@ export function buildInputRichMessage(
   if (rtl) result.is_rtl = true;
   if (skipDetection) result.skip_entity_detection = true;
   return result;
+}
+
+/** Builds an ephemeral rich draft with Telegram's native Thinking block last. */
+export function buildThinkingRichDraft(
+  mode: RichMode,
+  content: string,
+  rtl: boolean,
+  skipDetection: boolean
+): TgAny {
+  if (containsThinkingBlock(mode, content)) {
+    return buildInputRichMessage(mode, content, rtl, skipDetection, []);
+  }
+
+  if (mode === "blocks") {
+    return buildInputRichMessage(
+      mode,
+      JSON.stringify([
+        ...parseRichBlocks(content),
+        { type: "thinking", text: "Thinking…" },
+      ]),
+      rtl,
+      skipDetection,
+      []
+    );
+  }
+
+  const separator = content.trimEnd() ? "\n" : "";
+  return buildInputRichMessage(
+    mode,
+    `${content.trimEnd()}${separator}<tg-thinking>Thinking…</tg-thinking>`,
+    rtl,
+    skipDetection,
+    []
+  );
 }
 
 export function validateRichMessage(

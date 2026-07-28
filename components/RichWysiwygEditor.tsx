@@ -9,6 +9,7 @@ import React, {
   useState,
 } from "react";
 import type { PreviewMedia } from "./RichMessagePreview";
+import { RICH_HTML_TAGS } from "@/lib/rich";
 
 export interface RichWysiwygHandle {
   insertHtml: (html: string) => void;
@@ -44,12 +45,19 @@ const BLOCK_COMMANDS: BlockCommand[] = [
   { id: "text", label: "Text", hint: "Plain paragraph", icon: "T", html: "<p>Type something</p>" },
   { id: "heading-1", label: "Heading 1", hint: "Large section heading", icon: "H1", html: "<h1>Heading</h1>" },
   { id: "heading-2", label: "Heading 2", hint: "Medium section heading", icon: "H2", html: "<h2>Heading</h2>" },
+  { id: "heading-3", label: "Heading 3", hint: "Small section heading", icon: "H3", html: "<h3>Heading</h3>" },
+  { id: "heading-4", label: "Heading 4", hint: "Fourth-level heading", icon: "H4", html: "<h4>Heading</h4>" },
+  { id: "heading-5", label: "Heading 5", hint: "Fifth-level heading", icon: "H5", html: "<h5>Heading</h5>" },
+  { id: "heading-6", label: "Heading 6", hint: "Sixth-level heading", icon: "H6", html: "<h6>Heading</h6>" },
   { id: "bullets", label: "Bulleted list", hint: "Simple bullet list", icon: "•", html: "<ul><li>List item</li></ul>" },
   { id: "numbers", label: "Numbered list", hint: "Ordered steps", icon: "1.", html: "<ol><li>List item</li></ol>" },
   { id: "todo", label: "To-do list", hint: "Track an item", icon: "☑", html: '<ul><li><input type="checkbox"> To-do</li></ul>' },
   { id: "quote", label: "Quote", hint: "Capture a quotation", icon: "❝", html: "<blockquote>Quoted text</blockquote>" },
   { id: "callout", label: "Callout", hint: "Highlight something important", icon: "💡", html: "<aside>Important callout<cite>Source</cite></aside>" },
   { id: "code", label: "Code", hint: "Preformatted code block", icon: "‹›", html: "<pre><code>const ready = true;</code></pre>" },
+  { id: "footer", label: "Footer", hint: "Muted footer text", icon: "Ft", html: "<footer>Footer text</footer>" },
+  { id: "anchor", label: "Anchor", hint: "In-document link target", icon: "#", html: '<a name="section"></a>' },
+  { id: "reference", label: "Reference", hint: "Footnote-style reference", icon: "⁝", html: '<tg-reference name="note">Referenced text</tg-reference>' },
   { id: "divider", label: "Divider", hint: "Separate sections", icon: "—", html: "<hr>" },
   { id: "details", label: "Toggle", hint: "Collapsible details", icon: "▸", html: "<details open><summary>More details</summary><p>Expandable content</p></details>" },
   { id: "table", label: "Table", hint: "Two-column table", icon: "▦", html: "<table bordered striped><tr><th>Name</th><th>Value</th></tr><tr><td>Latency</td><td>Realtime</td></tr></table>" },
@@ -58,14 +66,7 @@ const BLOCK_COMMANDS: BlockCommand[] = [
   { id: "thinking", label: "Thinking", hint: "Draft-only thinking block", icon: "◌", html: "<tg-thinking>Thinking…</tg-thinking>" },
 ];
 
-const ALLOWED_TAGS = new Set([
-  "a", "b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "code", "mark",
-  "sub", "sup", "tg-spoiler", "tg-reference", "tg-emoji", "tg-time", "tg-math", "h1", "h2",
-  "h3", "h4", "h5", "h6", "p", "pre", "footer", "hr", "ul", "ol", "li", "blockquote",
-  "aside", "img", "video", "audio", "figure", "figcaption", "cite", "tg-map", "tg-collage",
-  "tg-slideshow", "table", "caption", "tr", "th", "td", "details", "summary",
-  "tg-math-block", "tg-thinking", "br", "input",
-]);
+const ALLOWED_TAGS = new Set<string>(RICH_HTML_TAGS);
 
 const DROP_CONTENT = new Set(["script", "style", "iframe", "object", "embed", "svg", "math", "form"]);
 
@@ -169,7 +170,11 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
     sync();
   };
 
-  const wrapSelection = (tag: string) => {
+  const wrapSelection = (
+    tag: string,
+    attributes: Record<string, string> = {},
+    fallbackText = "text"
+  ) => {
     restoreSelection();
     const editor = editorRef.current;
     const selection = window.getSelection();
@@ -177,7 +182,8 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
     const range = selection.getRangeAt(0);
     if (!editor.contains(range.commonAncestorContainer)) return;
     const element = document.createElement(tag);
-    if (range.collapsed) element.textContent = "text";
+    for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
+    if (range.collapsed) element.textContent = fallbackText;
     else element.appendChild(range.extractContents());
     range.insertNode(element);
     range.selectNodeContents(element);
@@ -191,6 +197,25 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
     const href = window.prompt("Link URL", "https://");
     if (!href || !safeHref(href)) return;
     command("createLink", href);
+  };
+
+  const referenceSelection = () => {
+    const name = window.prompt("Reference name", "note-1")?.trim() || "";
+    if (!validIdentifier(name)) return;
+    wrapSelection("tg-reference", { name }, "Referenced text");
+  };
+
+  const customEmojiSelection = () => {
+    const emojiId = window.prompt("Telegram custom emoji id", "5368324170671202286")?.trim() || "";
+    if (!/^\d+$/.test(emojiId)) return;
+    wrapSelection("tg-emoji", { "emoji-id": emojiId }, "👍");
+  };
+
+  const timeSelection = () => {
+    const unix = window.prompt("Unix timestamp", String(Math.floor(Date.now() / 1000)))?.trim() || "";
+    if (!integer(unix)) return;
+    const format = window.prompt("Telegram date-time format", "wDT")?.trim() || "wDT";
+    wrapSelection("tg-time", { unix, format }, "Formatted time");
   };
 
   const applyBlockCommand = (commandItem: BlockCommand, blockId: string) => {
@@ -238,7 +263,10 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
     sync();
   };
 
-  const transformBlock = (tag: "p" | "h1" | "h2" | "blockquote" | "pre", blockId: string) => {
+  const transformBlock = (
+    tag: "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "blockquote" | "pre",
+    blockId: string
+  ) => {
     const block = editorRef.current?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`);
     const body = block?.querySelector<HTMLElement>(".rich-block-content");
     if (!body) return;
@@ -274,11 +302,15 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
     ["Spoiler", "▨", () => wrapSelection("tg-spoiler")],
     ["Subscript", "x₂", () => wrapSelection("sub")],
     ["Superscript", "x²", () => wrapSelection("sup")],
+    ["Inline math", "ƒ", () => wrapSelection("tg-math", {}, "x^2 + y^2")],
+    ["Reference", "Ref", referenceSelection],
+    ["Custom emoji", "🙂", customEmojiSelection],
+    ["Date and time", "Time", timeSelection],
     ["Link", "🔗", linkSelection],
   ] as const;
 
   const visibleCommands = slashMenu
-    ? BLOCK_COMMANDS.filter((item) => `${item.label} ${item.hint}`.toLowerCase().includes(slashMenu.query.toLowerCase())).slice(0, 9)
+    ? BLOCK_COMMANDS.filter((item) => `${item.label} ${item.hint}`.toLowerCase().includes(slashMenu.query.toLowerCase()))
     : [];
 
   return (
@@ -514,6 +546,10 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
             <button onClick={() => transformBlock("p", blockMenu.blockId)}>Text</button>
             <button onClick={() => transformBlock("h1", blockMenu.blockId)}>H1</button>
             <button onClick={() => transformBlock("h2", blockMenu.blockId)}>H2</button>
+            <button onClick={() => transformBlock("h3", blockMenu.blockId)}>H3</button>
+            <button onClick={() => transformBlock("h4", blockMenu.blockId)}>H4</button>
+            <button onClick={() => transformBlock("h5", blockMenu.blockId)}>H5</button>
+            <button onClick={() => transformBlock("h6", blockMenu.blockId)}>H6</button>
             <button onClick={() => transformBlock("blockquote", blockMenu.blockId)}>Quote</button>
             <button onClick={() => transformBlock("pre", blockMenu.blockId)}>Code</button>
           </div>
@@ -767,7 +803,7 @@ function copyAllowedAttributes(
   if (tag === "tg-map") {
     copy("lat", (value) => numberInRange(value, -90, 90));
     copy("long", (value) => numberInRange(value, -180, 180));
-    copy("zoom", (value) => integer(value) && numberInRange(value, 13, 20));
+    copy("zoom", (value) => integer(value) && numberInRange(value, 0, 24));
   }
   if (tag === "tg-reference") copy("name", validIdentifier);
   if (tag === "tg-emoji") copy("emoji-id", integer);

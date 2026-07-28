@@ -1,6 +1,7 @@
 "use client";
 
 import type { TgAny } from "@/lib/types";
+import { botFetch } from "./botToken";
 
 export interface TgResult<T = any> {
   ok: boolean;
@@ -16,14 +17,14 @@ export interface CallMeta {
   deleteMessageIds?: number[];
 }
 
-/** Call any Bot API method through the server proxy (token stays server-side). */
+/** Call any Bot API method through the transient Worker proxy. */
 export async function tg<T = any>(
   method: string,
   params: TgAny = {},
   meta?: CallMeta
 ): Promise<TgResult<T>> {
   try {
-    const res = await fetch("/api/tg", {
+    const res = await botFetch("/api/tg", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ method, params, meta }),
@@ -57,7 +58,7 @@ export async function tgUpload<T = any>(
   try {
     const query = new URLSearchParams({ method });
     if (meta) query.set("meta", JSON.stringify(meta));
-    const res = await fetch(`/api/tg?${query}`, { method: "POST", body: fd });
+    const res = await botFetch(`/api/tg?${query}`, { method: "POST", body: fd });
     return (await res.json()) as TgResult<T>;
   } catch (e: any) {
     return { ok: false, description: e?.message || "network error" };
@@ -65,7 +66,7 @@ export async function tgUpload<T = any>(
 }
 
 export async function polling(action: "start" | "stop" | "clear" | "skip"): Promise<TgResult> {
-  const res = await fetch("/api/polling", {
+  const res = await botFetch("/api/polling", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action }),
@@ -79,7 +80,7 @@ export async function avatar(
 ): Promise<{ ok: boolean; file_id?: string | null }> {
   try {
     const query = new URLSearchParams({ id: String(id), kind });
-    const response = await fetch(`/api/avatar?${query}`, { cache: "no-store" });
+    const response = await botFetch(`/api/avatar?${query}`, { cache: "no-store" });
     return await response.json() as { ok: boolean; file_id?: string | null };
   } catch {
     return { ok: false };
