@@ -1,0 +1,38 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "humanoid",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-07-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./out",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/telegram/*"]
+  },
+  "vars": {
+    "TELEGRAM_API_ROOT": "https://api.telegram.org"
+  },
+  "secrets": {
+    "required": ["BOT_TOKEN"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BOT_HUB",
+        "class_name": "BotHub"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["BotHub"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.02 }
+  }
+}

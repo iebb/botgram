@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+.wrangler
+coverage
+.env
+.dev.vars*
+.env*.local
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
