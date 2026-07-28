@@ -219,9 +219,11 @@ function BotIdentity() {
           />
           {p.lastError
             ? p.lastError.slice(0, 44)
-            : p.running
-              ? `browser history · ${p.updatesSeen} updates`
-              : "webhook needs attention"}
+            : me?.can_read_all_group_messages === false
+              ? "group privacy on · admin needed for all text"
+              : p.running
+                ? `browser history · ${p.updatesSeen} updates`
+                : "webhook needs attention"}
         </div>
       </div>
     </div>

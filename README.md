@@ -21,6 +21,12 @@ Humanoid does not turn a bot into a user account:
 - Permissions, edit/delete windows, privacy mode, payments, business features,
   Stars, and Telegram rate limits still apply.
 
+If a group shows join/service events but not ordinary messages, Telegram Group
+Privacy is enabled for the bot. Promote the bot to group admin, or use
+`@BotFather` -> `/setprivacy` -> select the bot -> **Disable**, then remove and
+re-add it to the group. Humanoid detects `can_read_all_group_messages: false` and
+shows this remediation in the affected chat and Webhook panel.
+
 ## Semi-stateless architecture
 
 ```text

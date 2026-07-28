@@ -31,6 +31,12 @@ hours; it is not a legacy chat API. Updates delivered while no Humanoid browser 
 open are not recoverable from this dashboard after the webhook has acknowledged
 them.
 
+If joins appear in a group but ordinary text does not, inspect the fresh `getMe`
+field `can_read_all_group_messages`. `false` means Telegram Group Privacy is on;
+the webhook and ingest path cannot recover messages Telegram never delivers. Make
+the bot an admin in that group, or disable `/setprivacy` in `@BotFather` and re-add
+the bot. The dashboard surfaces this condition automatically.
+
 ## Operator commands
 
 ```bash

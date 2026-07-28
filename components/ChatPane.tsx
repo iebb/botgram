@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { useStore } from "./Store";
 import MessageList from "./MessageList";
 import Composer from "./Composer";
+import GroupPrivacyWarning from "./GroupPrivacyWarning";
 import { Avatar, Field, Json, Modal, Select, TextInput, Toggle, useOutsideClick } from "./UI";
 import KeyboardBuilder, { buildReplyMarkup, emptyKb, type KbDraft } from "./KeyboardBuilder";
 import type { MsgAction } from "./MessageItem";
@@ -213,6 +214,8 @@ export default function ChatPane({
           <IconInfo />
         </button>
       </div>
+
+      {(chat.chat.type === "group" || chat.chat.type === "supergroup") && <GroupPrivacyWarning />}
 
       {pinned && (
         <div

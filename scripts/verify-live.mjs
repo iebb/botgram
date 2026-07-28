@@ -148,6 +148,7 @@ console.log(JSON.stringify({
   ok: true,
   url: baseUrl,
   bot: `@${login.body.bot.username}`,
+  groupPrivacyMode: login.body.bot.can_read_all_group_messages === false,
   authenticated: true,
   serverStateEmpty: true,
   botApiProxy: true,

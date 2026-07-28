@@ -5,6 +5,7 @@ import { useStore } from "../Store";
 import { Field, Json, TextInput, Toggle } from "../UI";
 import { ALL_UPDATE_TYPES } from "@/lib/updateTypes";
 import type { TgResult } from "@/lib/client/api";
+import GroupPrivacyWarning from "../GroupPrivacyWarning";
 
 export default function WebhookPanel() {
   const { call, notify, upload } = useStore();
@@ -32,6 +33,7 @@ export default function WebhookPanel() {
 
   return (
     <div className="scroll-y" style={{ flex: 1 }}>
+      <GroupPrivacyWarning compact />
       <div className="section">
         <div className="section-title">Current webhook</div>
         <Json value={info} />

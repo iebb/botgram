@@ -86,7 +86,7 @@ describe("Humanoid Worker", () => {
     expect(webhook.status).toBe(401);
   });
 
-  it("fans each live update out immediately without retaining its payload", async () => {
+  it("fans ordinary supergroup text out immediately without retaining its payload", async () => {
     const socket = await openSocket();
     const framesPromise = collectFrames(socket, 3);
     const incoming = update(20);
