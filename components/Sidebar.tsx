@@ -6,11 +6,14 @@ import { Avatar, useOutsideClick } from "./UI";
 import {
   IconBolt,
   IconBot,
+  IconCheck,
   IconChecks,
+  IconGitHub,
   IconLink,
   IconMenu,
   IconMoon,
   IconDoc,
+  IconPlus,
   IconSearch,
   IconSun,
   IconTerminal,
@@ -20,6 +23,8 @@ import {
 import { chatName, listTime, messagePreview, userName } from "@/lib/format";
 import { collectKnownPeople, exactUserId, searchKnownPeople, type KnownPerson } from "@/lib/people";
 import type { ChatEntry, TgChat } from "@/lib/types";
+
+const SOURCE_URL = "https://github.com/iebb/botgram";
 
 export default function Sidebar({
   onOpenPanel,
@@ -261,6 +266,24 @@ export default function Sidebar({
           </div>
         )}
       </div>
+
+      <footer className="sidebar-footer">
+        <a
+          className="sidebar-source-link"
+          href={SOURCE_URL}
+          target="_blank"
+          rel="noreferrer"
+          aria-label="Open the Botgram source on GitHub"
+        >
+          <span className="sidebar-source-icon">
+            <IconGitHub size={18} />
+          </span>
+          <span className="sidebar-source-copy">
+            <strong>GitHub</strong>
+            <small>iebb/botgram</small>
+          </span>
+        </a>
+      </footer>
     </aside>
   );
 }
@@ -301,21 +324,108 @@ function PersonRow({
 }
 
 function BotIdentity() {
-  const { state } = useStore();
+  const { state, botAccounts, switchAccount, logout, authBusy, notify } = useStore();
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [switchingId, setSwitchingId] = useState<string | null>(null);
+  const accountRef = useOutsideClick<HTMLDivElement>(() => setAccountOpen(false));
   const me = state.me;
   const p = state.polling;
+  const currentId = String(me?.id || "");
+  const alternate = botAccounts.find((account) => account.botId !== currentId);
+
+  const openAccount = async (botId: string) => {
+    if (!botId || botId === currentId || switchingId) {
+      setAccountOpen(false);
+      return;
+    }
+    setSwitchingId(botId);
+    await logout();
+    const opened = await switchAccount(botId);
+    if (!opened) notify("Could not open that saved bot account", "err");
+    setSwitchingId(null);
+    setAccountOpen(false);
+  };
 
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "0.625rem",
-        padding: "0.5rem 0.9rem 0.6rem",
-        borderBottom: "1px solid var(--sidebar-border)",
-      }}
-    >
-      <Avatar id={me?.id || 0} name={me?.first_name || "Bot"} size="sm" entity={me || undefined} avatarKind="user" />
+    <div className="bot-identity">
+      <div ref={accountRef} className="bot-account-anchor">
+        <button
+          type="button"
+          className={`bot-account-switcher${accountOpen ? " active" : ""}`}
+          onClick={() => setAccountOpen((open) => !open)}
+          aria-label={`Switch bot account${botAccounts.length > 1 ? `, ${botAccounts.length} saved` : ""}`}
+          aria-haspopup="menu"
+          aria-expanded={accountOpen}
+        >
+          <Avatar
+            id={me?.id || 0}
+            name={me?.first_name || "Bot"}
+            size="sm"
+            entity={me || undefined}
+            avatarKind="user"
+          />
+          {alternate ? (
+            <Avatar
+              id={alternate.botId}
+              name={alternate.name}
+              size="xs"
+              className="bot-account-overlap"
+            />
+          ) : (
+            <span className="bot-account-overlap bot-account-add">
+              <IconPlus size={10} />
+            </span>
+          )}
+        </button>
+
+        {accountOpen && (
+          <div className="ctx-menu bot-account-menu" role="menu">
+            <div className="bot-account-menu-title">
+              <strong>Bot accounts</strong>
+              <small>Saved only in this browser</small>
+            </div>
+            {botAccounts.map((account) => {
+              const active = account.botId === currentId;
+              const busy = switchingId === account.botId;
+              return (
+                <button
+                  type="button"
+                  className={`ctx-item bot-account-item${active ? " active" : ""}`}
+                  key={account.botId}
+                  role="menuitem"
+                  aria-current={active ? "true" : undefined}
+                  disabled={authBusy || Boolean(switchingId)}
+                  onClick={() => void openAccount(account.botId)}
+                >
+                  <Avatar id={account.botId} name={account.name} size="xs" />
+                  <span className="bot-account-item-copy">
+                    <strong>{account.name}</strong>
+                    <small>{account.username ? `@${account.username}` : `ID ${account.botId}`}</small>
+                  </span>
+                  {busy ? (
+                    <span className="bot-account-state">Opening…</span>
+                  ) : active ? (
+                    <IconCheck size={16} />
+                  ) : null}
+                </button>
+              );
+            })}
+            <div className="bot-account-menu-rule" />
+            <button
+              type="button"
+              className="ctx-item"
+              role="menuitem"
+              disabled={authBusy || Boolean(switchingId)}
+              onClick={() => {
+                setAccountOpen(false);
+                void logout();
+              }}
+            >
+              <IconPlus size={17} /> Add or manage bots
+            </button>
+          </div>
+        )}
+      </div>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div className="truncate-1" style={{ fontWeight: 600, fontSize: "0.875rem" }}>
           {me?.first_name || "Connecting…"}

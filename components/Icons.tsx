@@ -45,6 +45,10 @@ export const IconSearch = svg(
   </>
 );
 export const IconMenu = svg(<path d="M3 6h18M3 12h18M3 18h18" />);
+export const IconGitHub = svg(
+  <path d="M12 2.4a9.8 9.8 0 0 0-3.1 19.1c.5.1.7-.2.7-.5v-1.9c-2.8.6-3.4-1.2-3.4-1.2-.4-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 0 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.4-1.1.7-1.3-2.2-.3-4.6-1.1-4.6-4.9 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.3 9.3 0 0 1 4.9 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.8-2.3 4.6-4.6 4.9.4.3.7.9.7 1.8V21c0 .3.2.6.7.5A9.8 9.8 0 0 0 12 2.4Z" />,
+  { fill: true }
+);
 export const IconClose = svg(<path d="M6 6l12 12M18 6L6 18" />);
 export const IconCheck = svg(<path d="M4 12.5 9 17.5 20 6.5" />);
 export const IconChecks = svg(

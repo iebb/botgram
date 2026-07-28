@@ -1,9 +1,13 @@
-# Humanoid
+# Botgram
 
-Humanoid is a Telegram-style control room for Telegram bot accounts. React and
-Next.js produce the static interface; a Cloudflare Worker proxies the Bot API,
-accepts Telegram webhooks, and relays events to currently open dashboards over a
-hibernating WebSocket.
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/iebb/botgram)
+
+[Open the source on GitHub](https://github.com/iebb/botgram) · [Open the live dashboard](https://humanoid.ieb.workers.dev)
+
+Botgram is the source for Humanoid, a Telegram-style control room for Telegram
+bot accounts. React and Next.js produce the static interface; a Cloudflare Worker
+proxies the Bot API, accepts Telegram webhooks, and relays events to currently
+open dashboards over a hibernating WebSocket.
 
 The dashboard provides guided tools plus a free-form console for the complete Bot
 API 10.2 surface: 185 catalogued methods, future method names, JSON parameters,
@@ -103,11 +107,12 @@ most 24 hours), not legacy chats or arbitrary message history.
   actions, rich paste sanitization, inline formatting, HTML source, Rich Markdown,
   native blocks, media, rendered keyboard previews, validation, import/export,
   manual streaming, and an opt-in live draft that republishes unfinished input
-  with a native Thinking block every three seconds. Studio always sends to the
-  currently open chat; a saved or imported draft cannot restore another destination.
-  The ordinary chat composer exposes the same three-second Thinking toggle.
-  Telegram restricts streamed rich drafts to private chats and disallows direct
-  uploads in them, so the control remains visible with that reason when unavailable.
+  with a native Thinking block at a one-, three-, or five-second interval. Studio
+  always sends to the currently open chat; a saved or imported draft cannot restore
+  another destination. The ordinary chat composer exposes the same private-chat-only
+  Thinking toggle and interval selector. Telegram restricts streamed rich drafts
+  to private chats and disallows direct uploads in them, so group chats omit the
+  control and Studio explains unavailable drafts.
   Draft configuration autosaves per bot in IndexedDB; import/export still
   happens only when the operator explicitly chooses a file, and upload bytes stay
   session-only.
@@ -144,18 +149,23 @@ and managed-bot credentials appear only in the immediate console response.
 
 ## Development and deployment
 
+The button above copies this public repository into your GitHub account, provisions
+the Worker and its declared Durable Object through Cloudflare Workers Builds, and
+opens the deployed dashboard. No Telegram bot token is requested during deployment:
+enter it only in the deployed browser, where Botgram keeps it in localStorage.
+
 ```bash
-cp .env.example .env
 npm install
 npm test
 npm run typecheck
 npm run build
 npx wrangler deploy --dry-run
-CLOUDFLARE_ACCOUNT_ID=<ieb-account-id> npx wrangler deploy
+CLOUDFLARE_ACCOUNT_ID=<your-account-id> npx wrangler deploy
 HUMANOID_URL=https://<deployment> npm run verify:live
 ```
 
-The ignored `.env` supplies `BOT_TOKEN` only to local verification commands. Do
+For optional live verification, create an ignored `.env` containing `BOT_TOKEN`.
+It supplies the token only to local verification commands. Do
 not upload it with Wrangler; production has no bot-token secret.
 
 `npm run dev:worker` serves the exported UI and Worker locally on port 3838. After
