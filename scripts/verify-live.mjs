@@ -84,10 +84,22 @@ if (!login.body?.ok || !login.body?.bot?.username) throw new Error("Login did no
 const setCookie = login.response.headers.get("set-cookie") || "";
 const cookie = setCookie.split(";", 1)[0];
 if (!cookie.startsWith("humanoid_session=")) throw new Error("Login did not issue the session cookie");
+if (/max-age|expires=/i.test(setCookie)) throw new Error("Login cookie is not browser-session-only");
 
 const session = await jsonRequest("/api/auth/session", {}, cookie);
 expectStatus(session, 200, "session");
 if (!session.body?.authenticated) throw new Error("The deployed session cookie did not verify");
+
+const state = await jsonRequest("/api/state", {}, cookie);
+expectStatus(state, 200, "ephemeral state");
+for (const key of ["chats", "queries", "rawUpdates", "log"]) {
+  if (!Array.isArray(state.body?.[key]) || state.body[key].length !== 0) {
+    throw new Error(`/api/state retained ${key}`);
+  }
+}
+if (!state.body?.messages || Object.keys(state.body.messages).length !== 0) {
+  throw new Error("/api/state retained messages");
+}
 
 const meCall = await jsonRequest(
   "/api/tg",
@@ -101,7 +113,7 @@ if (!meCall.body?.ok || meCall.body.result?.username !== login.body.bot.username
 
 const events = connectEvents(cookie);
 const initial = await events.next();
-if (initial?.type !== "snapshot") throw new Error("WebSocket did not begin with a persisted snapshot");
+if (initial?.type !== "ready") throw new Error("WebSocket did not begin with an ephemeral ready event");
 
 const install = await jsonRequest(
   "/api/webhook/install",
@@ -137,8 +149,9 @@ console.log(JSON.stringify({
   url: baseUrl,
   bot: `@${login.body.bot.username}`,
   authenticated: true,
+  ephemeralState: true,
   botApiProxy: true,
-  websocketSnapshot: true,
+  websocketReady: true,
   webhook: webhookInfo.body.result.url,
   pendingUpdates: webhookInfo.body.result.pending_update_count,
   lastWebhookError: webhookInfo.body.result.last_error_message || null,

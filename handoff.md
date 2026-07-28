@@ -1,21 +1,26 @@
 # Humanoid operator handoff
 
-Humanoid is a single-bot Telegram dashboard deployed as a Next.js static export
-plus a Cloudflare Worker. Its production update path is webhook-driven and does
-not use `getUpdates`, SSE, or process memory.
+Humanoid is a single-bot Next.js/React dashboard served with a Cloudflare Worker.
+Production updates use a Telegram webhook and a hibernating Durable Object
+WebSocket. The Durable Object is connection coordination only: normal operation
+does not use Durable Object storage.
 
-## Runtime
+## Runtime contract
 
-- `BOT_TOKEN` is required as a Worker secret and is also the dashboard login.
-- `/telegram/webhook` validates Telegram's secret header before accepting an update.
-- One SQLite Durable Object named from the bot's numeric id persists chats,
-  messages, pending queries, raw updates, webhook health, and redacted API calls.
-- Authenticated clients receive a snapshot and near-real-time events through a
-  hibernating Durable Object WebSocket.
-- User and chat avatars are resolved lazily through the Bot API and cached in the
-  same Durable Object for 24 hours (negative lookups for one hour).
-- Retention is bounded to 500 messages per chat, 300 raw updates, 300 log entries,
-  and 200 pending queries.
+- `BOT_TOKEN` is a Worker secret and the dashboard login credential.
+- `/telegram/webhook` rejects updates without Telegram's expected secret header.
+- The Worker relays updates and Bot API results only to dashboards currently open.
+- React holds chats, messages, queries, raw updates, logs, and resolved avatar file
+  IDs in memory. Reloading or closing the page clears all of them.
+- Rich Studio drafts and theme choices are also memory-only. Import and export are
+  explicit local file actions, not autosave.
+- Worker observability is disabled and proxied Telegram files use `no-store`.
+- Login uses a signed session cookie with no browser-persistence attribute. It
+  contains no token and has a 24-hour signature expiry.
+
+Telegram itself still owns and retains Telegram-side messages and media. Humanoid
+cannot retrieve arbitrary existing history, and bots still cannot initiate a new
+private conversation.
 
 ## Operator commands
 
@@ -28,35 +33,26 @@ CLOUDFLARE_ACCOUNT_ID=<ieb-account-id> npx wrangler deploy --secrets-file .env
 HUMANOID_URL=https://<deployment> npm run verify:live
 ```
 
-The `.env` file is ignored. Do not print, commit, paste, or place `BOT_TOKEN` in a
-Wrangler config variable. The example token in `.env.example` is deliberately fake.
+The ignored `.env` is the only local token source. Never print, commit, or move the
+token into Wrangler variables. Restore Telegram delivery from **Updates -> Restore
+webhook** after experimenting with a different webhook or `getUpdates` client.
 
-After the first deployment, install or repair Telegram delivery from
-**Updates -> Restore webhook**. The Worker chooses its own URL, uses all current
-update types, keeps pending Telegram updates, and records webhook health in the UI.
+## UI behavior
 
-## Operational behavior
-
-- The dashboard is locked until the operator provides the configured token.
-- The sidebar connection indicator reflects the dashboard WebSocket; the Updates
-  panel separately reports Telegram webhook health and the latest received update.
-- **Clear saved history** deletes only the dashboard's Durable Object records. It
-  does not delete Telegram chats or messages.
-- Uploads and Telegram downloads stream through the Worker.
-- Every Bot API method is available in Console, including newer methods not yet in
-  the suggestions list. Prefer the guided screens for common actions.
-- Rich Message Studio is available from the main menu and each chat composer. Its
-  default visual canvas edits Telegram Rich HTML directly and sanitizes pasted or
-  source HTML to the supported tag and attribute set; HTML source, Rich Markdown,
-  and native blocks remain available as advanced views. Sources, options, and the
-  keyboard autosave locally, while selected upload files remain memory-only and
-  must be chosen again after an import or reload.
-- Managed-bot tokens are intentionally absent from the persistent activity log.
+- **Clear current session** broadcasts an in-memory clear event to open dashboards;
+  it does not affect Telegram messages.
+- Rich Message Studio opens a Notion-style block canvas with drag handles, `/`
+  commands, and block context actions. Advanced source/native views remain present.
+- User profile photos use `getUserProfilePhotos`; group/channel photos use
+  `getChat`. Results are memoized only until the page closes.
+- The Console accepts every current or future Bot API method. Sensitive managed-bot
+  results are omitted from the transient activity stream.
 
 ## Verification boundary
 
-Automated tests prove the Worker/SQLite/WebSocket flow with synthetic updates. The
-live verifier checks `getMe`, login, the Bot API proxy, authenticated WebSocket
-snapshot, avatar resolution, and webhook installation without contacting a user or
-clearing saved history. Actual user-to-bot delivery still requires a real Telegram
-interaction and should not be claimed from synthetic checks alone.
+Worker tests cover authentication, webhook rejection, transient WebSocket delivery,
+deduplication within a live object instance, guest/ephemeral routing, session-only
+logs, and empty snapshots. The live verifier checks login, empty state, the real bot,
+authenticated WebSocket readiness, avatar resolution, and webhook installation
+without contacting a user. A real Telegram interaction is still required to prove
+end-to-end user-to-bot delivery.

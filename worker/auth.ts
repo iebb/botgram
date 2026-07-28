@@ -1,6 +1,6 @@
 const encoder = new TextEncoder();
 const SESSION_COOKIE = "humanoid_session";
-const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
+const SESSION_TTL_SECONDS = 24 * 60 * 60;
 
 function base64Url(bytes: ArrayBuffer | Uint8Array): string {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -44,7 +44,8 @@ export async function makeSessionCookie(botToken: string): Promise<string> {
   const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
   const payload = `${botToken.split(":", 1)[0]}.${expiresAt}`;
   const signature = base64Url(await hmac(botToken, `session:${payload}`));
-  return `${SESSION_COOKIE}=${payload}.${signature}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_TTL_SECONDS}`;
+  // No Max-Age/Expires: the browser discards this signed cookie when the session closes.
+  return `${SESSION_COOKIE}=${payload}.${signature}; Path=/; HttpOnly; Secure; SameSite=Strict`;
 }
 
 export function clearSessionCookie(): string {

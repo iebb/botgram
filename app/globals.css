@@ -1380,36 +1380,271 @@ a.tg-link:hover {
   overflow: auto;
   padding: clamp(0.8rem, 2.2vw, 1.7rem);
   background:
-    radial-gradient(circle at 82% 10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 19rem),
-    linear-gradient(150deg, var(--chat-bg), var(--chat-bg-2));
+    radial-gradient(circle at 82% 10%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 22rem),
+    color-mix(in srgb, var(--bg-secondary) 88%, var(--chat-bg));
 }
 .rich-wysiwyg.rich-message {
-  width: min(100%, 48rem);
+  width: min(100%, 52rem);
   min-width: 0;
   min-height: 100%;
   display: block;
   margin: 0 auto;
-  padding: clamp(1rem, 2vw, 1.45rem);
-  border: 1px solid color-mix(in srgb, var(--bubble-out-text) 9%, transparent);
-  border-radius: 0.95rem 0.95rem 0.28rem 0.95rem;
+  padding: clamp(1.4rem, 4vw, 3.25rem) clamp(0.8rem, 4vw, 3.2rem);
+  border: 1px solid var(--panel-border);
+  border-radius: 0.8rem;
   outline: 0;
-  background: var(--bubble-out);
-  color: var(--bubble-out-text);
-  box-shadow: 0 0.45rem 1.5rem rgba(0, 0, 0, 0.17);
+  background: var(--panel-bg);
+  color: var(--text);
+  box-shadow: 0 0.55rem 2rem rgba(0, 0, 0, 0.12);
   line-height: 1.5;
   caret-color: var(--accent);
 }
-.rich-wysiwyg.rich-message:focus {
+.rich-wysiwyg.rich-message:focus-within {
   border-color: color-mix(in srgb, var(--accent) 58%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent), 0 0.45rem 1.5rem rgba(0, 0, 0, 0.17);
-}
-.rich-wysiwyg.rich-message:empty::before {
-  content: attr(data-placeholder);
-  color: color-mix(in srgb, var(--bubble-out-text) 45%, transparent);
-  pointer-events: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent), 0 0.55rem 2rem rgba(0, 0, 0, 0.12);
 }
 .rich-wysiwyg.rich-message > * + * {
-  margin-top: 0.7rem;
+  margin-top: 0.08rem;
+}
+.rich-block-tip {
+  margin-inline-start: 0.25rem;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+.rich-notion-block {
+  position: relative;
+  min-width: 0;
+  min-height: 2rem;
+  padding: 0.14rem 0 0.14rem 2.9rem;
+  border-radius: 0.35rem;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+[dir="rtl"] .rich-notion-block {
+  padding-right: 2.9rem;
+  padding-left: 0;
+}
+.rich-notion-block:hover,
+.rich-notion-block:focus-within {
+  background: color-mix(in srgb, var(--text) 2.5%, transparent);
+}
+.rich-block-gutter {
+  position: absolute;
+  top: 0.2rem;
+  left: 0.1rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.05rem;
+  opacity: 0;
+  transform: translateX(0.2rem);
+  transition: opacity 100ms ease, transform 100ms ease;
+}
+[dir="rtl"] .rich-block-gutter {
+  right: 0.1rem;
+  left: auto;
+}
+.rich-notion-block:hover > .rich-block-gutter,
+.rich-notion-block:focus-within > .rich-block-gutter,
+.rich-notion-block.is-dragging > .rich-block-gutter {
+  opacity: 1;
+  transform: none;
+}
+.rich-block-gutter button {
+  width: 1.3rem;
+  height: 1.65rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 0.28rem;
+  color: var(--text-tertiary);
+  font-size: 0.92rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.rich-block-gutter button:hover,
+.rich-block-gutter button:focus-visible {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+}
+.rich-block-handle {
+  letter-spacing: -0.35rem;
+  cursor: grab !important;
+}
+.rich-block-handle:active {
+  cursor: grabbing !important;
+}
+.rich-block-content {
+  position: relative;
+  min-width: 0;
+  min-height: 1.7rem;
+  padding: 0.08rem 0.25rem;
+  border-radius: 0.25rem;
+  outline: none;
+  overflow-wrap: anywhere;
+}
+.rich-block-content:has(> p:only-child > br:only-child)::before {
+  position: absolute;
+  inset-inline-start: 0.25rem;
+  color: var(--text-tertiary);
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+.rich-block-content > * {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+.rich-block-content > * + * {
+  margin-top: 0.65rem;
+}
+.rich-block-content h1 {
+  font-size: clamp(1.65rem, 3vw, 2.15rem);
+  line-height: 1.2;
+}
+.rich-block-content h2 {
+  font-size: clamp(1.3rem, 2.4vw, 1.65rem);
+  line-height: 1.25;
+}
+.rich-block-content h3 {
+  font-size: 1.15rem;
+}
+.rich-block-content blockquote {
+  padding-inline-start: 0.85rem;
+  border-inline-start: 3px solid var(--text);
+  color: var(--text-secondary);
+}
+.rich-block-content aside {
+  padding: 0.75rem 0.85rem;
+  border-radius: 0.45rem;
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-secondary));
+}
+.rich-block-content aside cite {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+.rich-block-content pre {
+  overflow-x: auto;
+  padding: 0.75rem;
+  border-radius: 0.45rem;
+  background: color-mix(in srgb, var(--text) 8%, var(--bg));
+}
+.rich-block-content hr {
+  margin: 0.8rem 0;
+  border: 0;
+  border-top: 1px solid var(--panel-border);
+}
+.rich-notion-block.is-dragging {
+  opacity: 0.38;
+}
+.rich-notion-block.drag-before::before,
+.rich-notion-block.drag-after::after {
+  position: absolute;
+  right: 0;
+  left: 2.9rem;
+  z-index: 4;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  content: "";
+}
+.rich-notion-block.drag-before::before { top: -1px; }
+.rich-notion-block.drag-after::after { bottom: -1px; }
+.rich-floating-menu {
+  position: fixed;
+  z-index: 250;
+  width: min(20rem, calc(100vw - 1rem));
+  max-height: min(26rem, calc(100vh - 1rem));
+  overflow-y: auto;
+  padding: 0.35rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.6rem;
+  background: var(--panel-bg);
+  box-shadow: 0 0.7rem 2.3rem rgba(0, 0, 0, 0.26);
+}
+.rich-floating-menu > button,
+.rich-slash-menu > button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.48rem 0.55rem;
+  border-radius: 0.38rem;
+  text-align: start;
+  color: var(--text);
+}
+.rich-floating-menu > button:hover,
+.rich-floating-menu > button:focus-visible {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.rich-floating-menu > button.danger {
+  color: var(--danger);
+}
+.rich-floating-menu > button > span:first-child:not(.rich-command-icon) {
+  width: 1.3rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+.rich-command-icon {
+  width: 2.15rem;
+  height: 2.15rem;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.35rem;
+  background: var(--bg-secondary);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.rich-slash-menu button > span:last-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.rich-slash-menu button strong {
+  font-size: 0.78rem;
+}
+.rich-slash-menu button small {
+  color: var(--text-secondary);
+  font-size: 0.67rem;
+}
+.rich-menu-label {
+  padding: 0.32rem 0.48rem;
+  color: var(--text-tertiary);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.rich-menu-empty {
+  padding: 0.8rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+.rich-turn-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.22rem;
+  padding: 0 0.25rem 0.3rem;
+}
+.rich-turn-grid button {
+  min-width: 0;
+  padding: 0.4rem 0.15rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.3rem;
+  color: var(--text-secondary);
+  font-size: 0.66rem;
+}
+.rich-turn-grid button:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--panel-border));
+}
+.rich-menu-separator {
+  height: 1px;
+  margin: 0.25rem;
+  background: var(--panel-border);
 }
 .rich-wysiwyg.rich-message ul,
 .rich-wysiwyg.rich-message ol {
@@ -1772,6 +2007,16 @@ a.tg-link:hover {
 }
 
 @media (max-width: 42rem) {
+  .rich-wysiwyg-canvas {
+    padding: 0.45rem;
+  }
+  .rich-wysiwyg.rich-message {
+    padding: 1rem 0.45rem;
+  }
+  .rich-block-gutter {
+    opacity: 0.35;
+    transform: none;
+  }
   .rich-studio-backdrop {
     padding: 0;
   }

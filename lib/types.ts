@@ -47,7 +47,7 @@ export interface TgUpdate {
   [k: string]: any;
 }
 
-/** A message as stored by us, plus local bookkeeping. */
+/** A message held in the current browser session, plus transient bookkeeping. */
 export interface StoredMessage extends TgMessage {
   /** local: stable key; ephemeral messages have message_id=0 and need their own identity */
   _key?: string;
@@ -126,10 +126,15 @@ export interface LogEntry {
 }
 
 export type StreamEvent =
+  | { type: "ready" }
+  | { type: "clear" }
   | { type: "snapshot"; data: AppSnapshot }
   | { type: "message"; chatId: string; message: StoredMessage }
   | { type: "message_edited"; chatId: string; message: StoredMessage }
+  | { type: "message_patch"; chatId: string; messageKey: string; patch: TgAny }
   | { type: "message_deleted"; chatId: string; messageId: number; messageKey?: string }
+  | { type: "reaction"; chatId: string; messageId: number; reactions: TgAny[] }
+  | { type: "poll_update"; poll: TgAny }
   | { type: "chat"; chat: ChatEntry }
   | { type: "query"; query: PendingQuery }
   | { type: "query_answered"; id: string }

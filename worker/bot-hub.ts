@@ -14,11 +14,6 @@ import type {
 import type { TelegramParams, TelegramResponse } from "./telegram";
 import { isRecord, redactForLog } from "./telegram";
 
-const MAX_MESSAGES_PER_CHAT = 500;
-const MAX_LOG = 300;
-const MAX_RAW = 300;
-const MAX_QUERIES = 200;
-
 const MESSAGE_KEYS = ["message", "channel_post", "business_message", "guest_message"] as const;
 const EDIT_KEYS = ["edited_message", "edited_channel_post", "edited_business_message"] as const;
 const QUERY_KEYS = [
@@ -39,113 +34,16 @@ const QUERY_KEYS = [
   "subscription",
 ] as const;
 
-interface MetaRow extends Record<string, SqlStorageValue> {
-  value: string;
-}
-
-interface ChatRow extends Record<string, SqlStorageValue> {
-  chat_id: string;
-  data: string;
-}
-
-interface MessageRow extends Record<string, SqlStorageValue> {
-  chat_id: string;
-  data: string;
-}
-
-interface DataRow extends Record<string, SqlStorageValue> {
-  data: string;
-}
-
-interface MessageKeyRow extends Record<string, SqlStorageValue> {
-  message_key: string;
-  data: string;
-}
-
+/**
+ * A hibernating WebSocket rendezvous point. The object intentionally does not
+ * read or write Durable Object storage during normal operation: Telegram
+ * updates and Bot API results are fanned out only to dashboards that are open.
+ */
 export class BotHub extends DurableObject<Env> {
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    ctx.blockConcurrencyWhile(async () => {
-      this.migrate();
-    });
-  }
-
-  private migrate(): void {
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS _sql_schema_migrations (
-        id INTEGER PRIMARY KEY,
-        applied_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS chats (
-        chat_id TEXT PRIMARY KEY,
-        data TEXT NOT NULL,
-        last_activity INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS messages (
-        chat_id TEXT NOT NULL,
-        message_key TEXT NOT NULL,
-        seq INTEGER NOT NULL,
-        date INTEGER NOT NULL,
-        data TEXT NOT NULL,
-        PRIMARY KEY (chat_id, message_key)
-      );
-      CREATE INDEX IF NOT EXISTS messages_chat_seq ON messages(chat_id, seq);
-      CREATE TABLE IF NOT EXISTS queries (
-        id TEXT PRIMARY KEY,
-        at INTEGER NOT NULL,
-        data TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS queries_at ON queries(at DESC);
-      CREATE TABLE IF NOT EXISTS raw_updates (
-        update_id INTEGER PRIMARY KEY,
-        at INTEGER NOT NULL,
-        data TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS raw_updates_at ON raw_updates(at DESC);
-      CREATE TABLE IF NOT EXISTS api_log (
-        id TEXT PRIMARY KEY,
-        at INTEGER NOT NULL,
-        data TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS api_log_at ON api_log(at DESC);
-      CREATE TABLE IF NOT EXISTS avatars (
-        avatar_key TEXT PRIMARY KEY,
-        expires_at INTEGER NOT NULL,
-        data TEXT NOT NULL
-      );
-      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (1, unixepoch());
-    `);
-  }
-
-  private readMeta<T>(key: string, fallback: T): T {
-    const row = this.ctx.storage.sql
-      .exec<MetaRow>("SELECT value FROM meta WHERE key = ?", key)
-      .toArray()[0];
-    if (!row) return fallback;
-    try {
-      return JSON.parse(row.value) as T;
-    } catch {
-      return fallback;
-    }
-  }
-
-  private writeMeta(key: string, value: unknown): void {
-    this.ctx.storage.sql.exec(
-      "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      key,
-      JSON.stringify(value)
-    );
-  }
-
-  private nextSequence(): number {
-    const next = this.readMeta("sequence", 0) + 1;
-    this.writeMeta("sequence", next);
-    return next;
-  }
+  private sequence = 0;
+  private seenUpdates = new Set<number>();
+  private webhookRunning = true;
+  private webhookError: string | null = null;
 
   private emit(event: StreamEvent): void {
     const frame = JSON.stringify(event);
@@ -153,7 +51,7 @@ export class BotHub extends DurableObject<Env> {
       try {
         socket.send(frame);
       } catch {
-        // Cloudflare removes disconnected sockets from getWebSockets().
+        // Disconnected sockets disappear from getWebSockets().
       }
     }
   }
@@ -167,8 +65,7 @@ export class BotHub extends DurableObject<Env> {
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server, ["dashboard"]);
-    server.serializeAttachment({ connectedAt: Date.now() });
-    server.send(JSON.stringify({ type: "snapshot", data: this.snapshot() } satisfies StreamEvent));
+    server.send(JSON.stringify({ type: "ready" } satisfies StreamEvent));
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -184,99 +81,19 @@ export class BotHub extends DurableObject<Env> {
     socket.close(1011, "WebSocket error");
   }
 
+  /** Test/diagnostic shape only; it contains no retained chats or messages. */
   getSnapshotJson(): string {
-    return JSON.stringify(this.snapshot());
+    return JSON.stringify(this.emptySnapshot());
   }
 
-  getAvatarJson(avatarKey: string): string {
-    const row = this.ctx.storage.sql
-      .exec<DataRow>("SELECT data FROM avatars WHERE avatar_key = ? AND expires_at > ?", avatarKey, Date.now())
-      .toArray()[0];
-    return row?.data || "null";
-  }
-
-  setAvatarJson(avatarKey: string, dataJson: string, expiresAt: number): void {
-    this.ctx.storage.sql.exec(
-      `INSERT INTO avatars (avatar_key, expires_at, data) VALUES (?, ?, ?)
-       ON CONFLICT(avatar_key) DO UPDATE SET expires_at = excluded.expires_at, data = excluded.data`,
-      avatarKey,
-      expiresAt,
-      dataJson
-    );
-  }
-
-  private snapshot(): AppSnapshot {
-    const messages: Record<string, StoredMessage[]> = {};
-    for (const row of this.ctx.storage.sql
-      .exec<MessageRow>("SELECT chat_id, data FROM messages ORDER BY chat_id, seq")
-      .toArray()) {
-      (messages[row.chat_id] ||= []).push(JSON.parse(row.data) as StoredMessage);
-    }
-
-    const lastError = this.readMeta<string | null>("webhook_error", null);
-    return {
-      me: this.readMeta<TgUser | null>("me", null),
-      chats: this.ctx.storage.sql
-        .exec<ChatRow>("SELECT chat_id, data FROM chats ORDER BY last_activity DESC")
-        .toArray()
-        .map((row) => JSON.parse(row.data) as ChatEntry),
-      messages,
-      queries: this.ctx.storage.sql
-        .exec<DataRow>("SELECT data FROM queries ORDER BY at DESC LIMIT ?", MAX_QUERIES)
-        .toArray()
-        .map((row) => JSON.parse(row.data) as PendingQuery),
-      rawUpdates: this.ctx.storage.sql
-        .exec<DataRow>("SELECT data FROM raw_updates ORDER BY at DESC LIMIT ?", MAX_RAW)
-        .toArray()
-        .map((row) => JSON.parse(row.data) as TgUpdate),
-      polling: {
-        running: this.readMeta("webhook_running", true),
-        offset: null,
-        lastError,
-        lastPollAt: this.readMeta<number | null>("last_update_at", null),
-        updatesSeen: this.readMeta("updates_seen", 0),
-      },
-      log: this.ctx.storage.sql
-        .exec<DataRow>("SELECT data FROM api_log ORDER BY at DESC LIMIT ?", MAX_LOG)
-        .toArray()
-        .map((row) => JSON.parse(row.data) as LogEntry),
-    };
-  }
-
-  setMeJson(userJson: string): void {
-    this.setMe(JSON.parse(userJson) as TgUser);
-  }
-
-  private setMe(user: TgUser): void {
-    this.writeMeta("me", user);
-    this.emit({ type: "snapshot", data: this.snapshot() });
+  clearSession(): void {
+    this.emit({ type: "clear" });
   }
 
   setWebhookState(running: boolean, error: string | null): void {
-    this.writeMeta("webhook_running", running);
-    this.writeMeta("webhook_error", error);
-    this.emit({ type: "polling", polling: this.snapshot().polling });
-  }
-
-  markRead(chatId: string): void {
-    const entry = this.readChat(chatId);
-    if (!entry || entry.unread === 0) return;
-    entry.unread = 0;
-    this.saveChat(entry);
-    this.emit({ type: "chat", chat: entry });
-  }
-
-  clearStore(): void {
-    this.ctx.storage.sql.exec(`
-      DELETE FROM chats;
-      DELETE FROM messages;
-      DELETE FROM queries;
-      DELETE FROM raw_updates;
-      DELETE FROM api_log;
-      DELETE FROM avatars;
-      DELETE FROM meta WHERE key IN ('sequence', 'updates_seen', 'last_update_at');
-    `);
-    this.emit({ type: "snapshot", data: this.snapshot() });
+    this.webhookRunning = running;
+    this.webhookError = error;
+    this.emitPolling();
   }
 
   recordTelegramCallJson(
@@ -285,20 +102,8 @@ export class BotHub extends DurableObject<Env> {
     responseJson: string,
     elapsedMs: number
   ): void {
-    this.recordTelegramCall(
-      method,
-      JSON.parse(paramsJson) as TelegramParams,
-      JSON.parse(responseJson) as TelegramResponse,
-      elapsedMs
-    );
-  }
-
-  private recordTelegramCall(
-    method: string,
-    params: TelegramParams,
-    response: TelegramResponse,
-    elapsedMs: number
-  ): void {
+    const params = JSON.parse(paramsJson) as TelegramParams;
+    const response = JSON.parse(responseJson) as TelegramResponse;
     const sensitiveResult = /(?:ManagedBotToken|replaceManagedBotToken)/.test(method);
     const entry: LogEntry = {
       id: crypto.randomUUID(),
@@ -309,22 +114,12 @@ export class BotHub extends DurableObject<Env> {
       ok: response.ok,
       result: response.ok
         ? sensitiveResult
-          ? "[sensitive result shown once in the Console only]"
+          ? "[sensitive response omitted from the session log]"
           : redactForLog(response.result)
         : undefined,
       error: response.ok ? undefined : response.description,
       ms: elapsedMs,
     };
-    this.ctx.storage.sql.exec(
-      "INSERT INTO api_log (id, at, data) VALUES (?, ?, ?)",
-      entry.id,
-      entry.at,
-      JSON.stringify(entry)
-    );
-    this.ctx.storage.sql.exec(
-      "DELETE FROM api_log WHERE id NOT IN (SELECT id FROM api_log ORDER BY at DESC LIMIT ?)",
-      MAX_LOG
-    );
     this.emit({ type: "log", entry });
   }
 
@@ -334,34 +129,16 @@ export class BotHub extends DurableObject<Env> {
     resultJson: string,
     metaJson: string
   ): void {
-    this.absorbTelegramResult(
-      method,
-      JSON.parse(paramsJson) as TelegramParams,
-      JSON.parse(resultJson) as unknown,
-      JSON.parse(metaJson) as Record<string, unknown>
-    );
-  }
-
-  private absorbTelegramResult(
-    method: string,
-    params: TelegramParams,
-    result: unknown,
-    meta: Record<string, unknown> = {}
-  ): void {
-    if (method === "getMe" && isUser(result)) {
-      this.setMe(result);
-      return;
-    }
+    const params = JSON.parse(paramsJson) as TelegramParams;
+    const result = JSON.parse(resultJson) as unknown;
+    const meta = JSON.parse(metaJson) as Record<string, unknown>;
 
     if (method === "getChat" && isChat(result)) {
-      const entry = this.upsertChat(result);
-      this.emit({ type: "chat", chat: entry });
-      return;
+      this.emit({ type: "chat", chat: chatEntry(result) });
     }
 
-    if (method === "setWebhook") {
-      this.setWebhookState(true, null);
-    } else if (method === "deleteWebhook") {
+    if (method === "setWebhook") this.setWebhookState(true, null);
+    if (method === "deleteWebhook") {
       this.setWebhookState(false, "Telegram webhook removed; restore it from the Webhook panel");
     }
 
@@ -369,116 +146,93 @@ export class BotHub extends DurableObject<Env> {
       const chatId = String(params.chat_id ?? "");
       const ephemeralId = Number(params.ephemeral_message_id);
       if (chatId && Number.isSafeInteger(ephemeralId)) {
-        this.deleteMessageByKey(chatId, `e:${ephemeralId}`, 0);
+        this.emit({ type: "message_deleted", chatId, messageId: 0, messageKey: `e:${ephemeralId}` });
       }
     } else if (method.startsWith("delete") && /Message/.test(method)) {
       const chatId = String(meta.deleteChatId ?? params.chat_id ?? "");
-      const ids = messageIds(meta.deleteMessageIds ?? params.message_ids ?? params.message_id);
-      for (const id of ids) this.deleteMessage(chatId, id);
+      for (const id of messageIds(meta.deleteMessageIds ?? params.message_ids ?? params.message_id)) {
+        this.emit({ type: "message_deleted", chatId, messageId: id, messageKey: `m:${id}` });
+      }
     }
 
-    if (method.startsWith("editEphemeralMessage")) {
-      this.applyEphemeralEdit(method, params);
+    if (method.startsWith("editEphemeralMessage")) this.emitEphemeralPatch(method, params);
+    if (typeof meta.queryLocalId === "string") {
+      this.emit({ type: "query_answered", id: meta.queryLocalId });
     }
 
-    if (typeof meta.queryLocalId === "string") this.answerQuery(meta.queryLocalId);
-
-    for (const message of topLevelMessages(result)) this.putMessage(message, false, false);
+    for (const message of topLevelMessages(result)) this.emitMessage(message, false, false);
   }
 
   ingestUpdateJson(updateJson: string): void {
-    this.ingestUpdate(JSON.parse(updateJson) as TgUpdate);
-  }
+    const update = JSON.parse(updateJson) as TgUpdate;
+    if (!Number.isSafeInteger(update.update_id) || this.seenUpdates.has(update.update_id)) return;
 
-  private ingestUpdate(update: TgUpdate): void {
-    if (!Number.isSafeInteger(update.update_id)) return;
-    const inserted = this.ctx.storage.sql.exec(
-      "INSERT OR IGNORE INTO raw_updates (update_id, at, data) VALUES (?, ?, ?)",
-      update.update_id,
-      Date.now(),
-      JSON.stringify(update)
-    );
-    if (inserted.rowsWritten === 0) return;
-
-    this.ctx.storage.sql.exec(
-      "DELETE FROM raw_updates WHERE update_id NOT IN (SELECT update_id FROM raw_updates ORDER BY at DESC LIMIT ?)",
-      MAX_RAW
-    );
-    this.writeMeta("updates_seen", this.readMeta("updates_seen", 0) + 1);
-    this.writeMeta("last_update_at", Date.now());
-    this.writeMeta("webhook_running", true);
-    this.writeMeta("webhook_error", null);
+    this.seenUpdates.add(update.update_id);
+    if (this.seenUpdates.size > 512) {
+      const oldest = this.seenUpdates.values().next().value;
+      if (typeof oldest === "number") this.seenUpdates.delete(oldest);
+    }
+    this.webhookRunning = true;
+    this.webhookError = null;
     this.emit({ type: "raw", update });
 
     for (const key of MESSAGE_KEYS) {
       const candidate = update[key];
-      if (isMessage(candidate)) {
-        if (key === "guest_message" && candidate.guest_query_id) {
-          this.addQuery("guest_message", candidate);
-          this.emit({ type: "polling", polling: this.snapshot().polling });
-          return;
-        }
-        this.putMessage(candidate, true, false);
-        this.emit({ type: "polling", polling: this.snapshot().polling });
-        return;
+      if (!isMessage(candidate)) continue;
+      if (key === "guest_message" && candidate.guest_query_id) {
+        this.emitQuery("guest_message", candidate);
+      } else {
+        this.emitMessage(candidate, true, false);
       }
+      return;
     }
 
     for (const key of EDIT_KEYS) {
       const candidate = update[key];
-      if (isMessage(candidate)) {
-        this.putMessage(candidate, true, true);
-        this.emit({ type: "polling", polling: this.snapshot().polling });
-        return;
-      }
+      if (!isMessage(candidate)) continue;
+      this.emitMessage(candidate, true, true);
+      return;
     }
 
     if (isRecord(update.deleted_business_messages)) {
       const deleted = update.deleted_business_messages;
-      const chat = isChat(deleted.chat) ? deleted.chat : null;
-      if (chat && Array.isArray(deleted.message_ids)) {
+      if (isChat(deleted.chat) && Array.isArray(deleted.message_ids)) {
         for (const id of deleted.message_ids) {
-          if (typeof id === "number") this.deleteMessage(String(chat.id), id);
+          if (typeof id === "number") {
+            this.emit({
+              type: "message_deleted",
+              chatId: String(deleted.chat.id),
+              messageId: id,
+              messageKey: `m:${id}`,
+            });
+          }
         }
       }
       return;
     }
 
-    if (isRecord(update.message_reaction)) {
-      const reaction = update.message_reaction;
+    const reaction = update.message_reaction;
+    if (isRecord(reaction) && isChat(reaction.chat)) {
       const reactionChat = reaction.chat;
-      if (!isChat(reactionChat)) return;
-      const chatId = String(reactionChat.id);
-      const messageId = typeof reaction.message_id === "number" ? reaction.message_id : 0;
-      const stored = this.readMessage(chatId, `m:${messageId}`);
-      if (stored) {
-        stored._reactions = Array.isArray(reaction.new_reaction)
-          ? reaction.new_reaction.map((item) => ({ ...(isRecord(item) ? item : {}), user: reaction.user }))
-          : [];
-        this.saveMessage(chatId, stored);
-        this.emit({ type: "message_edited", chatId, message: stored });
-      }
-      this.addQuery("message_reaction", reaction);
+      const reactions = Array.isArray(reaction.new_reaction)
+        ? reaction.new_reaction.map((item) => ({
+            ...(isRecord(item) ? item : {}),
+            user: reaction.user,
+          }))
+        : [];
+      this.emit({
+        type: "reaction",
+        chatId: String(reactionChat.id),
+        messageId: typeof reaction.message_id === "number" ? reaction.message_id : 0,
+        reactions,
+      });
+      this.emitQuery("message_reaction", reaction);
       return;
     }
 
-    if (update.poll && isRecord(update.poll)) {
-      const pollId = update.poll.id;
-      if (typeof pollId === "string") {
-        const rows = this.ctx.storage.sql
-          .exec<MessageRow>(
-            "SELECT chat_id, data FROM messages WHERE json_extract(data, '$.poll.id') = ?",
-            pollId
-          )
-          .toArray();
-        for (const row of rows) {
-          const message = JSON.parse(row.data) as StoredMessage;
-          message.poll = update.poll;
-          this.saveMessage(row.chat_id, message);
-          this.emit({ type: "message_edited", chatId: row.chat_id, message });
-        }
-      }
-      this.addQuery("other", { poll: update.poll });
+    if (isRecord(update.poll)) {
+      this.emit({ type: "poll_update", poll: update.poll });
+      this.emitQuery("other", { poll: update.poll });
       return;
     }
 
@@ -490,169 +244,84 @@ export class BotHub extends DurableObject<Env> {
         : isRecord(payload.message) && isChat(payload.message.chat)
           ? payload.message.chat
           : null;
-      if (chat) {
-        const entry = this.upsertChat(chat);
-        const user = isUser(payload.from) ? payload.from : isUser(payload.user) ? payload.user : null;
-        if (user) entry.knownUsers[String(user.id)] = user;
-        this.saveChat(entry);
-        this.emit({ type: "chat", chat: entry });
-      }
-      this.addQuery(queryKind(key), payload);
+      const user = isUser(payload.from) ? payload.from : isUser(payload.user) ? payload.user : undefined;
+      if (chat) this.emit({ type: "chat", chat: chatEntry(chat, user) });
+      this.emitQuery(queryKind(key), payload);
       return;
     }
 
     if (isRecord(update.message_reaction_count)) {
-      this.addQuery("message_reaction_count", update.message_reaction_count);
+      this.emitQuery("message_reaction_count", update.message_reaction_count);
       return;
     }
-    this.addQuery("other", update);
+    this.emitQuery("other", update);
   }
 
-  private readChat(chatId: string): ChatEntry | undefined {
-    const row = this.ctx.storage.sql
-      .exec<ChatRow>("SELECT chat_id, data FROM chats WHERE chat_id = ?", chatId)
-      .toArray()[0];
-    return row ? (JSON.parse(row.data) as ChatEntry) : undefined;
-  }
-
-  private saveChat(entry: ChatEntry): void {
-    const chatId = String(entry.chat.id);
-    this.ctx.storage.sql.exec(
-      `INSERT INTO chats (chat_id, data, last_activity) VALUES (?, ?, ?)
-       ON CONFLICT(chat_id) DO UPDATE SET data = excluded.data, last_activity = excluded.last_activity`,
-      chatId,
-      JSON.stringify(entry),
-      entry.lastActivity
-    );
-  }
-
-  private upsertChat(chat: TgChat): ChatEntry {
-    const chatId = String(chat.id);
-    const existing = this.readChat(chatId);
-    const entry: ChatEntry = existing
-      ? { ...existing, chat: { ...existing.chat, ...chat } }
-      : { chat, lastActivity: Date.now(), unread: 0, knownUsers: {} };
-    this.saveChat(entry);
-    return entry;
-  }
-
-  private readMessage(chatId: string, key: string): StoredMessage | undefined {
-    const row = this.ctx.storage.sql
-      .exec<MessageKeyRow>(
-        "SELECT message_key, data FROM messages WHERE chat_id = ? AND message_key = ?",
-        chatId,
-        key
-      )
-      .toArray()[0];
-    return row ? (JSON.parse(row.data) as StoredMessage) : undefined;
-  }
-
-  private saveMessage(chatId: string, message: StoredMessage): void {
-    const key = storedMessageKey(message);
-    message._key = key;
-    this.ctx.storage.sql.exec(
-      `INSERT INTO messages (chat_id, message_key, seq, date, data) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(chat_id, message_key) DO UPDATE SET date = excluded.date, data = excluded.data`,
-      chatId,
-      key,
-      message._seq,
-      message.date,
-      JSON.stringify(message)
-    );
-  }
-
-  private putMessage(message: TgMessage, incoming: boolean, edited: boolean): void {
-    const chatId = String(message.chat.id);
-    const entry = this.upsertChat(message.chat);
-    const key = storedMessageKey(message);
-    const existing = this.readMessage(chatId, key);
-    const stored: StoredMessage = {
-      ...existing,
-      ...message,
-      _key: key,
-      _seq: existing?._seq ?? this.nextSequence(),
+  private emptySnapshot(): AppSnapshot {
+    return {
+      me: null,
+      chats: [],
+      messages: {},
+      queries: [],
+      rawUpdates: [],
+      polling: this.polling(),
+      log: [],
     };
-    this.saveMessage(chatId, stored);
-    this.ctx.storage.sql.exec(
-      `DELETE FROM messages WHERE chat_id = ? AND message_key NOT IN (
-         SELECT message_key FROM messages WHERE chat_id = ? ORDER BY seq DESC LIMIT ?
-       )`,
-      chatId,
-      chatId,
-      MAX_MESSAGES_PER_CHAT
-    );
-
-    entry.lastMessage = stored;
-    entry.lastActivity = Date.now();
-    if (incoming && isUser(message.from) && !message.from.is_bot) {
-      entry.knownUsers[String(message.from.id)] = message.from;
-    }
-    if (incoming && !edited && !existing) entry.unread += 1;
-    this.saveChat(entry);
-    this.emit({ type: edited || existing ? "message_edited" : "message", chatId, message: stored });
-    this.emit({ type: "chat", chat: entry });
   }
 
-  private deleteMessage(chatId: string, messageId: number): void {
-    this.deleteMessageByKey(chatId, `m:${messageId}`, messageId);
+  private polling(): AppSnapshot["polling"] {
+    return {
+      running: this.webhookRunning,
+      offset: null,
+      lastError: this.webhookError,
+      lastPollAt: null,
+      updatesSeen: 0,
+    };
   }
 
-  private deleteMessageByKey(chatId: string, key: string, messageId: number): void {
-    this.ctx.storage.sql.exec(
-      "DELETE FROM messages WHERE chat_id = ? AND message_key = ?",
-      chatId,
-      key
-    );
-    const entry = this.readChat(chatId);
-    if (entry?.lastMessage && storedMessageKey(entry.lastMessage) === key) {
-      const next = this.ctx.storage.sql
-        .exec<DataRow>("SELECT data FROM messages WHERE chat_id = ? ORDER BY seq DESC LIMIT 1", chatId)
-        .toArray()[0];
-      entry.lastMessage = next ? (JSON.parse(next.data) as StoredMessage) : undefined;
-      entry.lastActivity = entry.lastMessage?.date ? entry.lastMessage.date * 1000 : Date.now();
-      this.saveChat(entry);
-      this.emit({ type: "chat", chat: entry });
-    }
-    this.emit({ type: "message_deleted", chatId, messageId, messageKey: key });
+  private emitPolling(): void {
+    this.emit({ type: "polling", polling: this.polling() });
   }
 
-  private applyEphemeralEdit(method: string, params: TelegramParams): void {
+  private emitMessage(message: TgMessage, incoming: boolean, edited: boolean): void {
+    const chatId = String(message.chat.id);
+    const stored: StoredMessage = {
+      ...message,
+      _key: storedMessageKey(message),
+      _seq: ++this.sequence,
+    };
+    this.emit({ type: edited ? "message_edited" : "message", chatId, message: stored });
+    this.emit({
+      type: "chat",
+      chat: chatEntry(
+        message.chat,
+        isUser(message.from) && !message.from.is_bot ? message.from : undefined,
+        stored,
+        incoming && !edited
+      ),
+    });
+  }
+
+  private emitEphemeralPatch(method: string, params: TelegramParams): void {
     const chatId = String(params.chat_id ?? "");
     const ephemeralId = Number(params.ephemeral_message_id);
     if (!chatId || !Number.isSafeInteger(ephemeralId)) return;
-    const stored = this.readMessage(chatId, `e:${ephemeralId}`);
-    if (!stored) return;
-
+    const patch: Record<string, unknown> = {};
     if (method === "editEphemeralMessageText" && typeof params.text === "string") {
-      stored.text = params.text;
-      stored.entities = Array.isArray(params.entities) ? params.entities : undefined;
-      delete stored.caption;
-      delete stored.caption_entities;
-    } else if (method === "editEphemeralMessageCaption") {
-      stored.caption = typeof params.caption === "string" ? params.caption : undefined;
-      stored.caption_entities = Array.isArray(params.caption_entities)
-        ? params.caption_entities
-        : undefined;
-    } else if (method === "editEphemeralMessageMedia" && isRecord(params.media)) {
-      const media = params.media;
-      const type = typeof media.type === "string" ? media.type : "";
-      const supported = ["animation", "audio", "document", "photo", "video", "live_photo"];
-      if (supported.includes(type) && typeof media.media === "string") {
-        for (const key of supported) delete stored[key];
-        stored[type] = type === "photo"
-          ? [{ file_id: media.media, file_unique_id: media.media, width: 0, height: 0 }]
-          : { file_id: media.media, file_unique_id: media.media };
-      }
+      patch.text = params.text;
+      if (Array.isArray(params.entities)) patch.entities = params.entities;
     }
-
-    if ("reply_markup" in params) {
-      stored.reply_markup = isRecord(params.reply_markup) ? params.reply_markup : undefined;
+    if (method === "editEphemeralMessageCaption") {
+      patch.caption = typeof params.caption === "string" ? params.caption : "";
+      if (Array.isArray(params.caption_entities)) patch.caption_entities = params.caption_entities;
     }
-    this.saveMessage(chatId, stored);
-    this.emit({ type: "message_edited", chatId, message: stored });
+    if ("reply_markup" in params) patch.reply_markup = params.reply_markup;
+    if (Object.keys(patch).length) {
+      this.emit({ type: "message_patch", chatId, messageKey: `e:${ephemeralId}`, patch });
+    }
   }
 
-  private addQuery(kind: PendingQuery["kind"], payload: Record<string, unknown>): void {
+  private emitQuery(kind: PendingQuery["kind"], payload: Record<string, unknown>): void {
     const remoteId = payload.id ?? payload.guest_query_id ?? payload.query_id;
     const query: PendingQuery = {
       id: `${kind}-${typeof remoteId === "string" || typeof remoteId === "number" ? remoteId : crypto.randomUUID()}`,
@@ -660,29 +329,23 @@ export class BotHub extends DurableObject<Env> {
       at: Date.now(),
       payload,
     };
-    this.ctx.storage.sql.exec(
-      "INSERT OR REPLACE INTO queries (id, at, data) VALUES (?, ?, ?)",
-      query.id,
-      query.at,
-      JSON.stringify(query)
-    );
-    this.ctx.storage.sql.exec(
-      "DELETE FROM queries WHERE id NOT IN (SELECT id FROM queries ORDER BY at DESC LIMIT ?)",
-      MAX_QUERIES
-    );
     this.emit({ type: "query", query });
   }
+}
 
-  private answerQuery(id: string): void {
-    const row = this.ctx.storage.sql
-      .exec<DataRow>("SELECT data FROM queries WHERE id = ?", id)
-      .toArray()[0];
-    if (!row) return;
-    const query = JSON.parse(row.data) as PendingQuery;
-    query.answered = true;
-    this.ctx.storage.sql.exec("UPDATE queries SET data = ? WHERE id = ?", JSON.stringify(query), id);
-    this.emit({ type: "query_answered", id });
-  }
+function chatEntry(
+  chat: TgChat,
+  user?: TgUser,
+  lastMessage?: StoredMessage,
+  unread = false
+): ChatEntry {
+  return {
+    chat,
+    lastMessage,
+    lastActivity: lastMessage?.date ? lastMessage.date * 1000 : Date.now(),
+    unread: unread ? 1 : 0,
+    knownUsers: user ? { [String(user.id)]: user } : {},
+  };
 }
 
 function isUser(value: unknown): value is TgUser {
@@ -694,12 +357,7 @@ function isChat(value: unknown): value is TgChat {
 }
 
 function isMessage(value: unknown): value is TgMessage {
-  return (
-    isRecord(value) &&
-    typeof value.message_id === "number" &&
-    typeof value.date === "number" &&
-    isChat(value.chat)
-  );
+  return isRecord(value) && typeof value.message_id === "number" && typeof value.date === "number" && isChat(value.chat);
 }
 
 function storedMessageKey(message: Pick<TgMessage, "message_id"> & { ephemeral_message_id?: unknown }): string {

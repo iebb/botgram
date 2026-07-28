@@ -32,17 +32,37 @@ async function sessionCookie(): Promise<string> {
 }
 
 function nextFrame(socket: WebSocket): Promise<StreamEvent> {
+  return collectFrames(socket, 1).then(([frame]) => frame);
+}
+
+function collectFrames(socket: WebSocket, count: number): Promise<StreamEvent[]> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Timed out waiting for WebSocket frame")), 2_000);
-    socket.addEventListener(
-      "message",
-      (event) => {
-        clearTimeout(timeout);
-        resolve(JSON.parse(String(event.data)) as StreamEvent);
-      },
-      { once: true }
-    );
+    const frames: StreamEvent[] = [];
+    const timeout = setTimeout(() => {
+      socket.removeEventListener("message", onMessage);
+      reject(new Error(`Timed out waiting for ${count} WebSocket frame(s); got ${frames.length}`));
+    }, 2_000);
+    const onMessage = (event: MessageEvent) => {
+      frames.push(JSON.parse(String(event.data)) as StreamEvent);
+      if (frames.length < count) return;
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      resolve(frames);
+    };
+    socket.addEventListener("message", onMessage);
   });
+}
+
+async function openSocket(): Promise<WebSocket> {
+  const response = await SELF.fetch("https://example.com/api/ws", {
+    headers: { cookie: await sessionCookie(), upgrade: "websocket" },
+  });
+  expect(response.status).toBe(101);
+  const socket = response.webSocket;
+  expect(socket).not.toBeNull();
+  socket!.accept();
+  expect((await nextFrame(socket!)).type).toBe("ready");
+  return socket!;
 }
 
 describe("Humanoid Worker", () => {
@@ -66,26 +86,31 @@ describe("Humanoid Worker", () => {
     expect(webhook.status).toBe(401);
   });
 
-  it("persists updates once and retains Bot API constraints", async () => {
-    const stub = hub();
+  it("fans each live update out immediately without retaining its payload", async () => {
+    const socket = await openSocket();
+    const framesPromise = collectFrames(socket, 3);
     const incoming = update(20);
-    await stub.ingestUpdateJson(JSON.stringify(incoming));
-    await stub.ingestUpdateJson(JSON.stringify(incoming));
+    await hub().ingestUpdateJson(JSON.stringify(incoming));
+    const frames = await framesPromise;
 
-    const snapshot = JSON.parse(await stub.getSnapshotJson()) as AppSnapshot;
-    expect(snapshot.polling.updatesSeen).toBe(1);
-    expect(snapshot.rawUpdates).toHaveLength(1);
-    expect(snapshot.chats).toHaveLength(1);
-    expect(snapshot.chats[0].unread).toBe(1);
-    expect(snapshot.messages[String(CHAT.id)]).toHaveLength(1);
-    expect(snapshot.messages[String(CHAT.id)][0]).toMatchObject({ text: "near-real-time", _key: "m:42" });
+    expect(frames.map((frame) => frame.type)).toEqual(["raw", "message", "chat"]);
+    expect(frames.find((frame) => frame.type === "message")).toMatchObject({
+      chatId: String(CHAT.id),
+      message: { text: "near-real-time", _key: "m:42" },
+    });
 
-    await stub.markRead(String(CHAT.id));
-    const readSnapshot = JSON.parse(await stub.getSnapshotJson()) as AppSnapshot;
-    expect(readSnapshot.chats[0].unread).toBe(0);
+    await hub().ingestUpdateJson(JSON.stringify(incoming));
+    const snapshot = JSON.parse(await hub().getSnapshotJson()) as AppSnapshot;
+    expect(snapshot.polling.updatesSeen).toBe(0);
+    expect(snapshot.chats).toEqual([]);
+    expect(snapshot.messages).toEqual({});
+    expect(snapshot.rawUpdates).toEqual([]);
+    socket.close(1000, "test complete");
   });
 
-  it("redacts token-bearing methods from durable logs", async () => {
+  it("emits redacted API activity only to the current WebSocket session", async () => {
+    const socket = await openSocket();
+    const framePromise = nextFrame(socket);
     await hub().recordTelegramCallJson(
       "getManagedBotToken",
       JSON.stringify({ user_id: 707, provider_token: "top-secret" }),
@@ -93,54 +118,23 @@ describe("Humanoid Worker", () => {
       12
     );
 
-    const snapshot = JSON.parse(await hub().getSnapshotJson()) as AppSnapshot;
-    expect(snapshot.log[0].params).toMatchObject({ provider_token: "[redacted]" });
-    expect(snapshot.log[0].result).toBe("[sensitive result shown once in the Console only]");
-    expect(JSON.stringify(snapshot)).not.toContain("top-secret");
-  });
-
-  it("keeps ephemeral identities stable and handles edits and deletion", async () => {
-    const ephemeral = {
-      update_id: 25,
-      message: {
-        message_id: 0,
-        ephemeral_message_id: 991,
-        date: Math.floor(Date.now() / 1000),
-        chat: CHAT,
-        from: { id: 707, is_bot: false, first_name: "Ada" },
-        receiver_user: { id: 707, is_bot: false, first_name: "Ada" },
-        text: "private command",
+    const frame = await framePromise;
+    expect(frame).toMatchObject({
+      type: "log",
+      entry: {
+        params: { provider_token: "[redacted]" },
+        result: "[sensitive response omitted from the session log]",
       },
-    };
-    await hub().ingestUpdateJson(JSON.stringify(ephemeral));
-    let snapshot = JSON.parse(await hub().getSnapshotJson()) as AppSnapshot;
-    expect(snapshot.messages[String(CHAT.id)][0]._key).toBe("e:991");
-
-    await hub().absorbTelegramResultJson(
-      "editEphemeralMessageText",
-      JSON.stringify({
-        chat_id: CHAT.id,
-        receiver_user_id: 707,
-        ephemeral_message_id: 991,
-        text: "edited privately",
-      }),
-      "true",
-      "{}"
-    );
-    snapshot = JSON.parse(await hub().getSnapshotJson()) as AppSnapshot;
-    expect(snapshot.messages[String(CHAT.id)][0].text).toBe("edited privately");
-
-    await hub().absorbTelegramResultJson(
-      "deleteEphemeralMessage",
-      JSON.stringify({ chat_id: CHAT.id, receiver_user_id: 707, ephemeral_message_id: 991 }),
-      "true",
-      "{}"
-    );
-    snapshot = JSON.parse(await hub().getSnapshotJson()) as AppSnapshot;
-    expect(snapshot.messages[String(CHAT.id)] || []).toHaveLength(0);
+    });
+    const snapshot = JSON.parse(await hub().getSnapshotJson()) as AppSnapshot;
+    expect(snapshot.log).toEqual([]);
+    expect(JSON.stringify(snapshot)).not.toContain("top-secret");
+    socket.close(1000, "test complete");
   });
 
-  it("routes guest-mode messages to the answer queue without conflating chat histories", async () => {
+  it("routes guest and ephemeral interactions as transient events", async () => {
+    const socket = await openSocket();
+    const guestFrames = collectFrames(socket, 2);
     await hub().ingestUpdateJson(JSON.stringify({
       update_id: 26,
       guest_message: {
@@ -152,38 +146,39 @@ describe("Humanoid Worker", () => {
         text: "@bot summarize this",
       },
     }));
-    const snapshot = JSON.parse(await hub().getSnapshotJson()) as AppSnapshot;
-    expect(snapshot.queries[0]).toMatchObject({ id: "guest_message-guest-26", kind: "guest_message" });
-    expect(snapshot.messages[String(CHAT.id)] || []).toHaveLength(0);
-  });
-
-  it("pushes an ingested update over the authenticated WebSocket immediately", async () => {
-    const response = await SELF.fetch("https://example.com/api/ws", {
-      headers: { cookie: await sessionCookie(), upgrade: "websocket" },
+    expect((await guestFrames).at(-1)).toMatchObject({
+      type: "query",
+      query: { id: "guest_message-guest-26", kind: "guest_message" },
     });
-    expect(response.status).toBe(101);
-    const socket = response.webSocket;
-    expect(socket).not.toBeNull();
-    socket!.accept();
 
-    const initial = await nextFrame(socket!);
-    expect(initial.type).toBe("snapshot");
-
-    const firstEvent = nextFrame(socket!);
-    await hub().ingestUpdateJson(JSON.stringify(update(30, 77)));
-    expect((await firstEvent).type).toBe("raw");
-
-    const expected = ["message", "chat", "polling"];
-    for (const type of expected) expect((await nextFrame(socket!)).type).toBe(type);
-    socket!.close(1000, "test complete");
-  });
-
-  it("serves cached user avatars without exposing Telegram file credentials", async () => {
-    await hub().setAvatarJson("user:707", JSON.stringify({ fileId: "avatar-file-id" }), Date.now() + 60_000);
-    const response = await SELF.fetch("https://example.com/api/avatar?id=707&kind=user", {
-      headers: { cookie: await sessionCookie() },
+    const messageFrames = collectFrames(socket, 3);
+    await hub().ingestUpdateJson(JSON.stringify({
+      update_id: 27,
+      message: {
+        message_id: 0,
+        ephemeral_message_id: 991,
+        date: Math.floor(Date.now() / 1000),
+        chat: CHAT,
+        from: { id: 707, is_bot: false, first_name: "Ada" },
+        text: "private command",
+      },
+    }));
+    expect((await messageFrames).find((frame) => frame.type === "message")).toMatchObject({
+      message: { _key: "e:991" },
     });
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true, file_id: "avatar-file-id" });
+
+    const patchFrame = nextFrame(socket);
+    await hub().absorbTelegramResultJson(
+      "editEphemeralMessageText",
+      JSON.stringify({ chat_id: CHAT.id, ephemeral_message_id: 991, text: "edited privately" }),
+      "true",
+      "{}"
+    );
+    await expect(patchFrame).resolves.toMatchObject({
+      type: "message_patch",
+      messageKey: "e:991",
+      patch: { text: "edited privately" },
+    });
+    socket.close(1000, "test complete");
   });
 });

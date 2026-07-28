@@ -51,7 +51,18 @@ function messageKey(message: StoredMessage): string {
 function upsertChat(chats: ChatEntry[], chat: ChatEntry): ChatEntry[] {
   const idx = chats.findIndex((c) => String(c.chat.id) === String(chat.chat.id));
   const next = idx >= 0 ? [...chats] : [chat, ...chats];
-  if (idx >= 0) next[idx] = chat;
+  if (idx >= 0) {
+    const current = chats[idx];
+    next[idx] = {
+      ...current,
+      ...chat,
+      chat: { ...current.chat, ...chat.chat },
+      lastMessage: chat.lastMessage || current.lastMessage,
+      lastActivity: Math.max(current.lastActivity, chat.lastActivity),
+      unread: current.unread + chat.unread,
+      knownUsers: { ...current.knownUsers, ...chat.knownUsers },
+    };
+  }
   return next.sort((a, b) => b.lastActivity - a.lastActivity);
 }
 
@@ -73,8 +84,28 @@ function reducer(state: State, action: Action): State {
     case "event": {
       const e = action.event;
       switch (e.type) {
+        case "ready":
+          return { ...state, connected: true };
+
+        case "clear":
+          return {
+            ...EMPTY,
+            me: state.me,
+            polling: { ...state.polling, lastPollAt: null, updatesSeen: 0 },
+            connected: state.connected,
+          };
+
         case "snapshot":
-          return { ...state, ...e.data, connected: true };
+          return {
+            ...state,
+            me: e.data.me,
+            polling: {
+              ...e.data.polling,
+              lastPollAt: state.polling.lastPollAt || e.data.polling.lastPollAt,
+              updatesSeen: state.polling.updatesSeen,
+            },
+            connected: true,
+          };
 
         case "message":
         case "message_edited": {
@@ -83,7 +114,23 @@ function reducer(state: State, action: Action): State {
           const next = idx >= 0 ? [...list] : [...list, e.message];
           if (idx >= 0) next[idx] = e.message;
           else next.sort((a, b) => a.date - b.date || a._seq - b._seq);
-          return { ...state, messages: { ...state.messages, [e.chatId]: next } };
+          return {
+            ...state,
+            messages: { ...state.messages, [e.chatId]: next.slice(-500) },
+          };
+        }
+
+        case "message_patch": {
+          const list = state.messages[e.chatId] || [];
+          return {
+            ...state,
+            messages: {
+              ...state.messages,
+              [e.chatId]: list.map((message) =>
+                messageKey(message) === e.messageKey ? { ...message, ...e.patch } : message
+              ),
+            },
+          };
         }
 
         case "message_deleted": {
@@ -99,6 +146,29 @@ function reducer(state: State, action: Action): State {
           };
         }
 
+        case "reaction": {
+          const list = state.messages[e.chatId] || [];
+          return {
+            ...state,
+            messages: {
+              ...state.messages,
+              [e.chatId]: list.map((message) =>
+                message.message_id === e.messageId ? { ...message, _reactions: e.reactions } : message
+              ),
+            },
+          };
+        }
+
+        case "poll_update": {
+          const messages = Object.fromEntries(
+            Object.entries(state.messages).map(([chatId, list]) => [
+              chatId,
+              list.map((message) => message.poll?.id === e.poll.id ? { ...message, poll: e.poll } : message),
+            ])
+          );
+          return { ...state, messages };
+        }
+
         case "chat":
           return { ...state, chats: upsertChat(state.chats, e.chat) };
 
@@ -112,13 +182,30 @@ function reducer(state: State, action: Action): State {
           };
 
         case "polling":
-          return { ...state, polling: e.polling };
+          return {
+            ...state,
+            polling: {
+              ...e.polling,
+              lastPollAt: state.polling.lastPollAt,
+              updatesSeen: state.polling.updatesSeen,
+            },
+          };
 
         case "log":
           return { ...state, log: [e.entry, ...state.log].slice(0, 300) };
 
         case "raw":
-          return { ...state, rawUpdates: [e.update, ...state.rawUpdates].slice(0, 300) };
+          return {
+            ...state,
+            rawUpdates: [e.update, ...state.rawUpdates].slice(0, 300),
+            polling: {
+              ...state.polling,
+              running: true,
+              lastError: null,
+              lastPollAt: Date.now(),
+              updatesSeen: state.polling.updatesSeen + 1,
+            },
+          };
 
         default:
           return state;
@@ -212,16 +299,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   // -------------------------------------------------------------- theme
   useEffect(() => {
-    const saved = localStorage.getItem("tg-theme") as "light" | "dark" | null;
-    const initial = saved || "dark";
-    setThemeState(initial);
-    document.documentElement.dataset.theme = initial;
-  }, []);
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   const setTheme = useCallback((t: "light" | "dark") => {
     setThemeState(t);
     document.documentElement.dataset.theme = t;
-    localStorage.setItem("tg-theme", t);
   }, []);
 
   // --------------------------------------------------------------- auth
@@ -387,18 +470,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setEditing(null);
     if (id) {
       dispatch({ type: "local_read", chatId: id });
-      void Promise.all([
-        fetch("/api/read", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ chatId: id }),
-        }),
-        fetch("/api/tg", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ method: "getChat", params: { chat_id: Number(id) } }),
-        }),
-      ]).catch(() => undefined);
+      void fetch("/api/tg", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method: "getChat", params: { chat_id: Number(id) } }),
+      }).catch(() => undefined);
     }
   }, []);
 

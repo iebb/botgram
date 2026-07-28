@@ -78,7 +78,7 @@ export default function ChatPane({
               backdropFilter: "blur(4px)",
             }}
           >
-            Select a chat to start driving the bot
+            Live session only · no Telegram history is fetched or stored
           </div>
         </div>
       </main>

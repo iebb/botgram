@@ -39,8 +39,8 @@ export default function WebhookPanel() {
           Refresh
         </button>
         <p className="muted" style={{ fontSize: "0.75rem", lineHeight: 1.5 }}>
-          Humanoid uses this Worker endpoint to persist updates and push them to the browser over a
-          WebSocket. Restore it after experimenting with another webhook or getUpdates client.
+          Humanoid relays updates from this Worker endpoint only to browsers that are currently
+          open. The WebSocket coordinator does not save update payloads.
         </p>
         <button
           className="btn sm primary"

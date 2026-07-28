@@ -115,15 +115,12 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   const [keyboard, setKeyboard] = useState<KbDraft>(emptyKb);
   const [options, setOptions] = useState<SendOptions>(DEFAULT_OPTIONS);
   const [busy, setBusy] = useState<"send" | "draft" | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
   const sourceRef = useRef<HTMLTextAreaElement>(null);
   const wysiwygRef = useRef<RichWysiwygHandle>(null);
   const importRef = useRef<HTMLInputElement>(null);
-  const loadedKey = useRef("");
   const uploadsRef = useRef<RichUpload[]>([]);
   uploadsRef.current = uploads;
 
-  const storageKey = `humanoid-rich-studio:${state.me?.id || "bot"}`;
   const content = sources[mode];
   const descriptors = uploads.map(({ id, field, kind }) => ({ id, field, kind }));
   const validation = useMemo(
@@ -139,42 +136,6 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-
-  useEffect(() => {
-    if (loadedKey.current === storageKey) return;
-    loadedKey.current = storageKey;
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (!raw) return;
-      applySaved(JSON.parse(raw) as SavedStudio);
-      setSavedAt(Date.now());
-    } catch {
-      localStorage.removeItem(storageKey);
-    }
-    // The storage key changes only when bot identity changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storageKey]);
-
-  useEffect(() => {
-    if (!loadedKey.current) return;
-    const timer = window.setTimeout(() => {
-      const saved: SavedStudio = {
-        version: 1,
-        mode,
-        view: editorView,
-        sources,
-        rtl,
-        skipDetection,
-        target,
-        draftId,
-        keyboard,
-        options,
-      };
-      localStorage.setItem(storageKey, JSON.stringify(saved));
-      setSavedAt(Date.now());
-    }, 400);
-    return () => window.clearTimeout(timer);
-  }, [storageKey, mode, editorView, sources, rtl, skipDetection, target, draftId, keyboard, options]);
 
   useEffect(() => () => {
     for (const item of uploadsRef.current) URL.revokeObjectURL(item.previewUrl);
@@ -374,7 +335,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   };
 
   const resetStudio = () => {
-    if (!window.confirm("Start a new rich message and replace the locally saved draft?")) return;
+    if (!window.confirm("Discard this in-memory rich message and start a new one?")) return;
     for (const item of uploads) URL.revokeObjectURL(item.previewUrl);
     setUploads([]);
     setSources(DEFAULT_RICH_SOURCES);
@@ -399,7 +360,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
             </div>
           </div>
           <div className="rich-studio-save muted">
-            <IconCheck size={14} /> {savedAt ? `Saved locally ${new Date(savedAt).toLocaleTimeString()}` : "Autosave ready"}
+            <IconCheck size={14} /> Ephemeral · discarded when this page closes
           </div>
           <div className="rich-studio-header-actions">
             <button className="btn sm ghost" onClick={resetStudio}>New</button>
@@ -503,7 +464,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
                 const active = item === "visual" ? editorView === "visual" : editorView === "source" && mode === item;
                 return (
                   <button key={item} role="tab" aria-selected={active} className={active ? "active" : ""} onClick={() => selectEditorTab(item)}>
-                    {item === "visual" ? "Visual editor" : item === "html" ? "HTML source" : item === "markdown" ? "Rich Markdown" : "Native blocks"}
+                    {item === "visual" ? "Notion-style editor" : item === "html" ? "HTML source" : item === "markdown" ? "Rich Markdown" : "Native blocks"}
                   </button>
                 );
               })}
@@ -519,8 +480,8 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
 
             <div className="rich-source-head">
               <div>
-                <strong>{editorView === "visual" ? "WYSIWYG canvas" : mode === "blocks" ? "InputRichBlock[]" : mode}</strong>
-                <span className="muted"> · {content.length.toLocaleString()} characters{editorView === "visual" ? " · clean Rich HTML" : ""}</span>
+                <strong>{editorView === "visual" ? "WYSIWYG block canvas" : mode === "blocks" ? "InputRichBlock[]" : mode}</strong>
+                <span className="muted"> · {content.length.toLocaleString()} characters{editorView === "visual" ? " · drag blocks · type / for commands" : ""}</span>
               </div>
               <div style={{ display: "flex", gap: "0.35rem" }}>
                 <Toggle checked={rtl} onChange={setRtl} label="RTL" />

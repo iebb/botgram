@@ -22,7 +22,7 @@ export default function UpdatesPanel() {
             {p.running ? "Telegram webhook active" : "Webhook needs attention"}
             <span className="muted">
               {p.lastPollAt ? ` · last update ${new Date(p.lastPollAt).toLocaleTimeString()}` : ""}
-              {` · ${p.updatesSeen} updates`}
+              {` · ${p.updatesSeen} this session`}
             </span>
           </div>
         </div>
@@ -45,10 +45,10 @@ export default function UpdatesPanel() {
             className="btn sm"
             onClick={async () => {
               await pollingApi("clear");
-              notify("Saved dashboard history cleared");
+              notify("Current dashboard session cleared");
             }}
           >
-            Clear saved history
+            Clear current session
           </button>
         </div>
       </div>
@@ -82,7 +82,7 @@ export default function UpdatesPanel() {
 
         {view === "raw" &&
           (state.rawUpdates.length === 0 ? (
-            <Hint>No updates received yet.</Hint>
+            <Hint>No updates received in this open page yet. Raw updates are never retained.</Hint>
           ) : (
             state.rawUpdates.map((u) => (
               <div key={u.update_id} className="section" style={{ borderBottomWidth: "1px" }}>
@@ -98,7 +98,7 @@ export default function UpdatesPanel() {
           ))}
 
         {view === "log" &&
-          state.log.map((l) => (
+          (state.log.length === 0 ? <Hint>Bot API activity appears here only for this open page.</Hint> : state.log.map((l) => (
             <div key={l.id} className="section" style={{ borderBottomWidth: "1px" }}>
               <div style={{ display: "flex", gap: "0.375rem", alignItems: "center", marginBottom: "0.375rem" }}>
                 <span className={`chip ${l.ok ? "ok" : "err"}`}>{l.ok ? "ok" : "error"}</span>
@@ -110,7 +110,7 @@ export default function UpdatesPanel() {
               {l.error && <div className="chip err" style={{ whiteSpace: "normal" }}>{l.error}</div>}
               <Json value={{ params: l.params, result: l.result }} />
             </div>
-          ))}
+          )))}
       </div>
     </div>
   );

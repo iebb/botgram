@@ -155,8 +155,9 @@ export default function Sidebar({
               No chats yet
             </div>
             <p style={{ fontSize: "0.8125rem", lineHeight: 1.5, margin: "0 0 0.75rem" }}>
-              A bot can never open a conversation first — that is a hard limit of the Bot API.
-              Someone has to message the bot, or add it to a group, before a chat shows up here.
+              Telegram does not let bots fetch existing chat history or open a conversation first.
+              Chats appear only when a new update reaches this page while it is open, and disappear
+              on reload.
             </p>
             {botLink && (
               <button
@@ -220,7 +221,7 @@ function BotIdentity() {
           {p.lastError
             ? p.lastError.slice(0, 44)
             : p.running
-              ? `webhook · ${p.updatesSeen} updates`
+              ? `live only · ${p.updatesSeen} updates`
               : "webhook needs attention"}
         </div>
       </div>

@@ -21,6 +21,7 @@ describe("dashboard authentication", () => {
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("Secure");
     expect(setCookie).toContain("SameSite=Strict");
+    expect(setCookie).not.toMatch(/Max-Age|Expires=/i);
     expect(setCookie).not.toContain(TOKEN);
 
     const cookie = setCookie.split(";", 1)[0];

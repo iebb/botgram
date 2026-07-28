@@ -64,7 +64,7 @@ export default {
           return await handleState(env);
         }
         if (url.pathname === "/api/read" && request.method === "POST") {
-          return await handleRead(request, env);
+          return await handleRead(request);
         }
         if (url.pathname === "/api/tg" && request.method === "POST") {
           return await handleTelegramCall(request, env);
@@ -85,19 +85,8 @@ export default {
       }
 
       return env.ASSETS.fetch(request);
-    } catch (error) {
-      const requestId = crypto.randomUUID();
-      console.error(
-        JSON.stringify({
-          level: "error",
-          message: "request failed",
-          requestId,
-          method: request.method,
-          path: url.pathname,
-          error: error instanceof Error ? error.message : String(error),
-        })
-      );
-      return telegramError(500, `Internal error (${requestId})`);
+    } catch {
+      return telegramError(500, "Internal error");
     }
   },
 } satisfies ExportedHandler<Env>;
@@ -120,7 +109,6 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
     return telegramError(502, call.response.description || "Telegram rejected the configured token");
   }
 
-  await getHub(env).setMeJson(encodeJson(call.response.result));
   return json(
     { ok: true, bot: call.response.result },
     200,
@@ -129,26 +117,43 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleState(env: Env): Promise<Response> {
-  const hub = getHub(env);
-  let snapshot = decodeSnapshot(await hub.getSnapshotJson());
-  if (!snapshot.me) {
-    const call = await callTelegramJson<TgUser>(env, "getMe");
-    await hub.recordTelegramCallJson("getMe", "{}", encodeJson(call.response), call.elapsedMs);
-    if (call.response.ok && call.response.result) {
-      await hub.setMeJson(encodeJson(call.response.result));
-      snapshot = decodeSnapshot(await hub.getSnapshotJson());
-    } else {
-      snapshot.polling.lastError = call.response.description || "Unable to load bot identity";
-    }
-  }
+  const [identity, webhook] = await Promise.all([
+    callTelegramJson<TgUser>(env, "getMe"),
+    callTelegramJson<TgAny>(env, "getWebhookInfo"),
+  ]);
+  const webhookInfo = webhook.response.ok && isRecord(webhook.response.result)
+    ? webhook.response.result
+    : null;
+  const webhookUrl = typeof webhookInfo?.url === "string" ? webhookInfo.url : "";
+  const webhookError = typeof webhookInfo?.last_error_message === "string"
+    ? webhookInfo.last_error_message
+    : webhook.response.ok
+      ? null
+      : webhook.response.description || "Unable to inspect the Telegram webhook";
+  const snapshot: AppSnapshot = {
+    me: identity.response.ok && identity.response.result ? identity.response.result : null,
+    chats: [],
+    messages: {},
+    queries: [],
+    rawUpdates: [],
+    polling: {
+      running: Boolean(webhookUrl) && !webhookError,
+      offset: null,
+      lastError: identity.response.ok
+        ? webhookError
+        : identity.response.description || "Unable to load bot identity",
+      lastPollAt: null,
+      updatesSeen: 0,
+    },
+    log: [],
+  };
   return json(snapshot);
 }
 
-async function handleRead(request: Request, env: Env): Promise<Response> {
+async function handleRead(request: Request): Promise<Response> {
   const body = await readJsonObject(request);
   const chatId = typeof body.chatId === "string" ? body.chatId : String(body.chatId ?? "");
   if (!/^-?\d+$/.test(chatId)) return telegramError(400, "Invalid chat id");
-  await getHub(env).markRead(chatId);
   return json({ ok: true });
 }
 
@@ -221,8 +226,8 @@ async function handleLegacyPolling(request: Request, env: Env): Promise<Response
   const body = await readJsonObject(request);
   const action = body.action;
   if (action === "clear") {
-    await getHub(env).clearStore();
-    return json({ ok: true, polling: decodeSnapshot(await getHub(env).getSnapshotJson()).polling });
+    await getHub(env).clearSession();
+    return json({ ok: true });
   }
   if (action === "start") return json(await installWebhook(env, new URL(request.url).origin));
   if (action === "skip") return json({ ok: true, description: "Webhooks have no local backlog" });
@@ -253,7 +258,7 @@ async function handleTelegramFile(request: Request, env: Env): Promise<Response>
     const value = upstream.headers.get(name);
     if (value) headers.set(name, value);
   }
-  headers.set("cache-control", "private, max-age=3600, immutable");
+  headers.set("cache-control", "private, no-store");
   headers.set("x-content-type-options", "nosniff");
   const filename = info.response.result.file_path.split("/").pop()?.replace(/["\r\n]/g, "") || "telegram-file";
   headers.set("content-disposition", `inline; filename="${filename}"`);
@@ -267,11 +272,6 @@ async function handleAvatar(request: Request, env: Env): Promise<Response> {
   if (!/^-?\d{1,20}$/.test(id) || (kind !== "user" && kind !== "chat")) {
     return telegramError(400, "Invalid avatar lookup");
   }
-
-  const avatarKey = `${kind}:${id}`;
-  const hub = getHub(env);
-  const cached = JSON.parse(await hub.getAvatarJson(avatarKey)) as { fileId: string | null } | null;
-  if (cached) return json({ ok: true, file_id: cached.fileId });
 
   let fileId: string | null = null;
   let description: string | undefined;
@@ -306,8 +306,6 @@ async function handleAvatar(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  const ttlMs = fileId ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
-  await hub.setAvatarJson(avatarKey, JSON.stringify({ fileId }), Date.now() + ttlMs);
   return json({ ok: true, file_id: fileId, description });
 }
 
@@ -354,8 +352,4 @@ function telegramError(status: number, description: string): Response {
 
 function encodeJson(value: unknown): string {
   return JSON.stringify(value ?? null);
-}
-
-function decodeSnapshot(value: string): AppSnapshot {
-  return JSON.parse(value) as AppSnapshot;
 }
