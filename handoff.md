@@ -1,16 +1,22 @@
 # Humanoid operator handoff
 
-Humanoid is a single-bot Next.js/React dashboard served with a Cloudflare Worker.
+Humanoid is a multi-account Next.js/React bot dashboard served with a Cloudflare Worker.
 Production updates use a Telegram webhook and a hibernating Durable Object
 WebSocket. The Durable Object is connection coordination only: normal operation
 does not use Durable Object storage.
 
 ## Runtime contract
 
-- The bot token is browser-owned localStorage data, not a Worker secret. A
-  session-only browser cookie mirrors it for native media and WebSocket transport.
+- Bot tokens are browser-owned localStorage data, not Worker secrets. The local
+  account chooser stores validated bot identities and credentials; one active
+  session-only browser cookie mirrors the current token for native media and
+  WebSocket transport.
 - `/telegram/webhook/<hub-key>/<secret-digest>` rejects updates unless Telegram's
   secret header hashes to the digest in the route.
+- A connected dashboard installs Humanoid's webhook automatically. The last normal
+  client close/account switch deletes only Humanoid's endpoint without dropping
+  pending updates; another connected tab retains it. With no client after an abrupt
+  exit, webhook deliveries receive a retryable response instead of being acknowledged.
 - The Worker relays updates and Bot API results only to dashboards currently open.
 - React applies live events immediately. It coalesces per-bot chats, messages,
   queries, raw updates, redacted logs, selected chat, and resolved avatar file IDs
@@ -29,12 +35,12 @@ does not use Durable Object storage.
   isolate transient bot hubs without revealing one bot's events to another.
 
 Telegram itself still owns and retains Telegram-side messages and media. Humanoid
-cannot retrieve arbitrary existing history, and bots still cannot initiate a new
-private conversation. `getUpdates` is mutually exclusive with the installed
-webhook and exposes only unconfirmed updates that Telegram retains for at most 24
-hours; it is not a legacy chat API. Updates delivered while no Humanoid browser is
-open are not recoverable from this dashboard after the webhook has acknowledged
-them.
+cannot retrieve arbitrary existing history, enumerate contacts or joined chats,
+or initiate a new private conversation. `getUpdates` is mutually exclusive with
+an installed webhook and exposes only unconfirmed updates that Telegram retains
+for at most 24 hours; it is not a legacy chat API. The client lease avoids knowingly
+acknowledging updates when no dashboard can save them, but it cannot create a
+general Telegram history API.
 
 If joins appear in a group but ordinary text does not, inspect the fresh `getMe`
 field `can_read_all_group_messages`. `false` means Telegram Group Privacy is on;
@@ -54,10 +60,10 @@ HUMANOID_URL=https://<deployment> npm run verify:live
 ```
 
 The ignored `.env` supplies the token only to local/live verification. Never
-print, commit, or move it into Wrangler variables or secrets. The app saves an
-operator-entered token in that browser's localStorage. Restore Telegram delivery
-from **Updates -> Restore webhook** after experimenting with another webhook or
-`getUpdates` client.
+print, commit, or move it into Wrangler variables or secrets. The app saves
+operator-entered accounts in that browser's localStorage. Opening an authenticated
+dashboard restores Telegram delivery automatically; **Updates -> Restore webhook**
+is also available after experimenting with another webhook or `getUpdates` client.
 
 ## UI behavior
 
@@ -65,6 +71,10 @@ from **Updates -> Restore webhook** after experimenting with another webhook or
   discovered sticker library, then broadcasts a clear event to other open
   dashboards. It does not affect Telegram messages, the Rich Studio draft, or the
   theme.
+- **Switch account** releases the current client lease, clears the session-only
+  transport credential, and opens the browser-local saved-bot chooser. Forgetting
+  an account removes its localStorage token without implicitly deleting its
+  IndexedDB history.
 - Rich Message Studio opens a Notion-style Block Editor with drag handles, `/`
   commands, and block context actions. Advanced source/native views remain present.
 - User profile photos use `getUserProfilePhotos`; group/channel photos use
@@ -83,11 +93,11 @@ from **Updates -> Restore webhook** after experimenting with another webhook or
 
 Worker tests cover browser-owned credentials, stateless webhook rejection,
 transient WebSocket delivery, deduplication within a live object instance,
-guest/ephemeral routing, session-only
-server logs, and empty server snapshots. Browser tests cover per-bot IndexedDB
-round-tripping, sticker-library persistence/deduplication/frequency sorting, admin
+guest/ephemeral routing, distinct client leases, session-only server logs, and
+empty server snapshots. Browser tests cover local account switching and per-bot
+IndexedDB round-tripping, sticker-library persistence/deduplication/frequency sorting, admin
 permission visibility, and the separation of dashboard history from preferences
 and rich drafts. The live verifier checks credential rejection, empty server state, the real bot,
-authenticated WebSocket readiness, avatar resolution, and webhook installation
-without contacting a user. A real Telegram interaction is still required to prove
-end-to-end user-to-bot delivery and browser restoration.
+authenticated WebSocket readiness, avatar resolution, webhook installation, and
+last-client deregistration without contacting a user. A real Telegram interaction
+is still required to prove end-to-end user-to-bot delivery and browser restoration.

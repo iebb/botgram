@@ -60,13 +60,46 @@ export class BotHub extends DurableObject<Env> {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected WebSocket upgrade", { status: 426 });
     }
+    const clientId = new URL(request.url).searchParams.get("client") || "";
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(clientId)) {
+      return new Response("A valid client id is required", { status: 400 });
+    }
 
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server, ["dashboard"]);
+    server.serializeAttachment({ clientId });
     server.send(JSON.stringify({ type: "ready" } satisfies StreamEvent));
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  releaseClientAndHasOthers(clientId: string): boolean {
+    const sockets = this.ctx.getWebSockets();
+    for (const socket of sockets) {
+      const attachment: unknown = socket.deserializeAttachment();
+      if (isRecord(attachment) && attachment.clientId === clientId) {
+        socket.serializeAttachment({ clientId, released: true });
+        socket.close(1000, "Client released");
+      }
+    }
+    return sockets.some((socket) => {
+      const attachment: unknown = socket.deserializeAttachment();
+      return !isRecord(attachment) || attachment.released !== true;
+    });
+  }
+
+  hasActiveClients(): boolean {
+    return this.ctx.getWebSockets().some((socket) => {
+      const attachment: unknown = socket.deserializeAttachment();
+      return !isRecord(attachment) || attachment.released !== true;
+    });
+  }
+
+  ingestUpdateIfConnectedJson(updateJson: string): boolean {
+    if (!this.hasActiveClients()) return false;
+    this.ingestUpdateJson(updateJson);
+    return true;
   }
 
   webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {

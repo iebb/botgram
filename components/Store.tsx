@@ -21,11 +21,17 @@ import type {
 } from "@/lib/types";
 import { avatar, polling as pollingApi, tg, tgUpload, type CallMeta, type TgResult } from "@/lib/client/api";
 import {
+  currentBotToken,
   botFetch,
+  forgetSavedBotAccount,
   removeBotToken,
+  rememberBotAccount,
   restoreBotToken,
+  savedBotAccounts,
+  savedBotToken,
   saveBotToken,
   validBotToken,
+  type BotAccountSummary,
 } from "@/lib/client/botToken";
 import {
   browserStorageAvailable,
@@ -294,6 +300,9 @@ interface Ctx {
   authBusy: boolean;
   authError: string;
   login: (token: string) => Promise<boolean>;
+  botAccounts: BotAccountSummary[];
+  switchAccount: (botId: string) => Promise<boolean>;
+  forgetAccount: (botId: string) => void;
   logout: () => Promise<void>;
   browserStorage: "loading" | "ready" | "memory-only";
   clearBrowserHistory: () => Promise<boolean>;
@@ -346,6 +355,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [authStatus, setAuthStatus] = useState<AuthStatus>("checking");
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [botAccounts, setBotAccounts] = useState<BotAccountSummary[]>([]);
   const [avatarFileIds, setAvatarFileIds] = useState<Record<string, string | null>>({});
   const [browserStorage, setBrowserStorage] = useState<"loading" | "ready" | "memory-only">("loading");
   const [activeBotId, setActiveBotId] = useState<string | null>(null);
@@ -369,6 +379,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const stickerSaveIdleCallback = useRef<number | null>(null);
   const stickerSetRequests = useRef(new Set<string>());
   const storageWarningShown = useRef(false);
+  const streamClientId = useRef("");
 
   const cancelPendingSave = useCallback(() => {
     if (saveTimer.current) {
@@ -463,6 +474,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   // --------------------------------------------------------------- auth
   useEffect(() => {
     try {
+      setBotAccounts(savedBotAccounts());
       setAuthStatus(restoreBotToken() ? "authenticated" : "required");
     } catch {
       setAuthError("Browser local storage is unavailable; Humanoid cannot retain the bot token.");
@@ -485,7 +497,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         setAuthError(body.description || "Telegram rejected this bot token");
         return false;
       }
+      rememberBotAccount(normalized, body.me);
       saveBotToken(normalized);
+      setBotAccounts(savedBotAccounts());
       setAuthStatus("authenticated");
       return true;
     } catch (error) {
@@ -493,6 +507,26 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       return false;
     } finally {
       setAuthBusy(false);
+    }
+  }, []);
+
+  const switchAccount = useCallback(async (botId: string) => {
+    const token = savedBotToken(botId);
+    if (!token) {
+      setBotAccounts(savedBotAccounts());
+      setAuthError("That saved bot account is no longer available in this browser");
+      return false;
+    }
+    return login(token);
+  }, [login]);
+
+  const forgetAccount = useCallback((botId: string) => {
+    try {
+      forgetSavedBotAccount(botId);
+      setBotAccounts(savedBotAccounts());
+      setAuthError("");
+    } catch {
+      setAuthError("Could not update saved accounts in this browser");
     }
   }, []);
 
@@ -540,32 +574,43 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [applyStickerLibrary, requestStickerSet]);
 
   const logout = useCallback(async () => {
-    try {
-      removeBotToken();
-    } finally {
-      cancelPendingSave();
-      cancelPendingStickerSave();
-      const record = latestStoredDashboard.current;
-      if (record) void saveDashboard(record).catch(() => undefined);
-      const stickers = latestStoredStickerLibrary.current;
-      if (stickers?.botId) void saveStickerLibrary(stickers).catch(() => undefined);
-      latestStoredDashboard.current = null;
-      latestStoredStickerLibrary.current = null;
-      hydratedRef.current = false;
-      activeBotIdRef.current = null;
-      pendingEvents.current = [];
-      stickerSetRequests.current.clear();
-      setActiveBotId(null);
-      dispatch({ type: "reset" });
-      setSelectedChatId(null);
-      setAvatarFileIds({});
-      setBotChatMemberState(null);
-      const empty = emptyStickerLibrary("");
-      stickerLibraryRef.current = empty;
-      setStickerLibrary(empty);
-      avatarRequests.current.clear();
-      setAuthStatus("required");
+    const clientId = streamClientId.current;
+    if (clientId) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 1_500);
+      void botFetch(`/api/webhook/release?client=${encodeURIComponent(clientId)}`, {
+        method: "POST",
+        cache: "no-store",
+        signal: controller.signal,
+      })
+        .catch(() => {
+          // Telegram will retry against the webhook if this client disappears abruptly.
+        })
+        .finally(() => window.clearTimeout(timeout));
     }
+    removeBotToken();
+    cancelPendingSave();
+    cancelPendingStickerSave();
+    const record = latestStoredDashboard.current;
+    if (record) void saveDashboard(record).catch(() => undefined);
+    const stickers = latestStoredStickerLibrary.current;
+    if (stickers?.botId) void saveStickerLibrary(stickers).catch(() => undefined);
+    latestStoredDashboard.current = null;
+    latestStoredStickerLibrary.current = null;
+    hydratedRef.current = false;
+    activeBotIdRef.current = null;
+    pendingEvents.current = [];
+    stickerSetRequests.current.clear();
+    setActiveBotId(null);
+    dispatch({ type: "reset" });
+    setSelectedChatId(null);
+    setAvatarFileIds({});
+    setBotChatMemberState(null);
+    const empty = emptyStickerLibrary("");
+    stickerLibraryRef.current = empty;
+    setStickerLibrary(empty);
+    avatarRequests.current.clear();
+    setAuthStatus("required");
   }, [cancelPendingSave, cancelPendingStickerSave]);
 
   // ------------------------------------------------------------- stream
@@ -575,6 +620,33 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     let socket: WebSocket | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryMs = 250;
+    let webhookInstallInFlight = false;
+    let webhookInstalled = false;
+    const clientId = crypto.randomUUID();
+    streamClientId.current = clientId;
+    const releaseUrl = `/api/webhook/release?client=${encodeURIComponent(clientId)}`;
+
+    const ensureWebhook = () => {
+      if (webhookInstalled || webhookInstallInFlight) return;
+      webhookInstallInFlight = true;
+      void botFetch("/api/webhook/install", { method: "POST", cache: "no-store" })
+        .then(async (response) => {
+          const result = (await response.json()) as TgResult;
+          webhookInstalled = Boolean(response.ok && result.ok);
+          if (response.status === 401) requireLogin();
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          webhookInstallInFlight = false;
+        });
+    };
+
+    const releaseOnPageHide = () => {
+      webhookInstalled = false;
+      navigator.sendBeacon?.(releaseUrl);
+    };
+    window.addEventListener("pagehide", releaseOnPageHide);
+    window.addEventListener("pageshow", ensureWebhook);
 
     hydratedRef.current = false;
     activeBotIdRef.current = null;
@@ -636,7 +708,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     const connect = () => {
       if (closed) return;
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      socket = new WebSocket(`${protocol}//${location.host}/api/ws`);
+      socket = new WebSocket(`${protocol}//${location.host}/api/ws?client=${encodeURIComponent(clientId)}`);
       socket.onmessage = (event) => {
         if (event.data === "pong") return;
         try {
@@ -648,6 +720,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       socket.onopen = () => {
         retryMs = 250;
         dispatch({ type: "connected", value: true });
+        ensureWebhook();
       };
       socket.onclose = () => {
         socket = null;
@@ -670,6 +743,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         if (!response.ok) return;
         const fresh = (await response.json()) as AppSnapshot;
         const botId = fresh.me?.id == null ? "" : String(fresh.me.id);
+        const token = currentBotToken();
+        if (fresh.me && token) {
+          try {
+            rememberBotAccount(token, fresh.me);
+            setBotAccounts(savedBotAccounts());
+          } catch {
+            // The active token remains usable even if the optional account list cannot be updated.
+          }
+        }
         let saved: StoredDashboard | null = null;
         let savedStickers: StickerLibrary | null = null;
         let storageWorked = browserStorageAvailable();
@@ -721,8 +803,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       closed = true;
+      window.removeEventListener("pagehide", releaseOnPageHide);
+      window.removeEventListener("pageshow", ensureWebhook);
       if (retryTimer) clearTimeout(retryTimer);
       socket?.close(1000, "Page closed");
+      if (streamClientId.current === clientId) streamClientId.current = "";
     };
   }, [
     authStatus,
@@ -968,6 +1053,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     authBusy,
     authError,
     login,
+    botAccounts,
+    switchAccount,
+    forgetAccount,
     logout,
     browserStorage,
     clearBrowserHistory,

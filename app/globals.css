@@ -150,7 +150,7 @@ body {
 }
 
 .login-card {
-  width: min(27rem, 100%);
+  width: min(30rem, 100%);
   padding: 2rem;
   border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
   border-radius: 1.25rem;
@@ -199,6 +199,103 @@ body {
   color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 600;
+}
+
+.login-accounts {
+  display: grid;
+  gap: 0.45rem;
+  max-height: 15rem;
+  margin: 0 0 1.1rem;
+  overflow-y: auto;
+}
+
+.login-section-label {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.login-account {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--input-border);
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--bg-secondary) 82%, transparent);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.login-account:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--input-border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
+}
+
+.login-account-select {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  text-align: left;
+}
+
+.login-account-icon {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+}
+
+.login-account-name {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+
+.login-account-name strong,
+.login-account-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.login-account-name strong {
+  font-size: 0.86rem;
+}
+
+.login-account-name small {
+  color: var(--text-tertiary);
+  font-size: 0.7rem;
+}
+
+.login-account-action {
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.login-account-forget {
+  display: grid;
+  width: 2.6rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-left: 1px solid var(--input-border);
+  color: var(--text-tertiary);
+}
+
+.login-account-forget:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+}
+
+.login-account button:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .login-token {

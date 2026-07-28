@@ -50,8 +50,8 @@ function collectFrames(socket: WebSocket, count: number): Promise<StreamEvent[]>
   });
 }
 
-async function openSocket(): Promise<WebSocket> {
-  const response = await SELF.fetch("https://example.com/api/ws", {
+async function openSocket(clientId = "test-client-0001"): Promise<WebSocket> {
+  const response = await SELF.fetch(`https://example.com/api/ws?client=${clientId}`, {
     headers: { authorization: `Bearer ${TOKEN}`, upgrade: "websocket" },
   });
   expect(response.status).toBe(101);
@@ -85,6 +85,21 @@ describe("Humanoid Worker", () => {
     );
     expect(webhook.status).toBe(401);
 
+    const retryable = await SELF.fetch(
+      `https://example.com/telegram/webhook/${await botTokenKey(TOKEN)}/${await webhookSecretDigest("right-secret")}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": "right-secret",
+        },
+        body: JSON.stringify(update(11)),
+      }
+    );
+    expect(retryable.status).toBe(503);
+    expect(retryable.headers.get("retry-after")).toBe("1");
+
+    const socket = await openSocket();
     const accepted = await SELF.fetch(
       `https://example.com/telegram/webhook/${await botTokenKey(TOKEN)}/${await webhookSecretDigest("right-secret")}`,
       {
@@ -97,6 +112,24 @@ describe("Humanoid Worker", () => {
       }
     );
     expect(accepted.status).toBe(204);
+    socket.close(1000, "test complete");
+  });
+
+  it("tracks distinct browser clients without storing credentials or updates", async () => {
+    const first = await openSocket("test-client-0001");
+    expect(await (await hub()).hasActiveClients()).toBe(true);
+
+    const second = await openSocket("test-client-0002");
+    expect(await (await hub()).releaseClientAndHasOthers("test-client-0001")).toBe(true);
+    expect(await (await hub()).releaseClientAndHasOthers("test-client-0002")).toBe(false);
+    expect(await (await hub()).hasActiveClients()).toBe(false);
+    expect(await (await hub()).ingestUpdateIfConnectedJson(JSON.stringify(update(19)))).toBe(false);
+
+    const snapshot = JSON.parse(await (await hub()).getSnapshotJson()) as AppSnapshot;
+    expect(snapshot.chats).toEqual([]);
+    expect(snapshot.messages).toEqual({});
+    first.close(1000, "test complete");
+    second.close(1000, "test complete");
   });
 
   it("fans ordinary supergroup text out immediately without retaining its payload", async () => {

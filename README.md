@@ -1,6 +1,6 @@
 # Humanoid
 
-Humanoid is a Telegram-style control room for one Telegram bot. React and
+Humanoid is a Telegram-style control room for Telegram bot accounts. React and
 Next.js produce the static interface; a Cloudflare Worker proxies the Bot API,
 accepts Telegram webhooks, and relays events to currently open dashboards over a
 hibernating WebSocket.
@@ -16,8 +16,11 @@ Humanoid does not turn a bot into a user account:
 - A bot generally cannot begin a private conversation. A user must contact it,
   add it to a chat, or otherwise grant it a scoped interaction first.
 - The Bot API does not expose arbitrary existing chat history. Only updates that
-  arrive while this dashboard is open, plus Message results from calls made in
-  that browser, can enter its locally retained timeline.
+  Telegram still has pending when a dashboard connects, live updates, and Message
+  results from calls made in that browser can enter its locally retained timeline.
+- The Bot API has no method to enumerate a bot's contacts or every group/channel
+  it has joined. Launch restores only chats already learned by this browser; a
+  specific known chat can be resolved with `getChat`.
 - The Bot API does not expose a bot/user-style list of installed sticker sets.
   Humanoid discovers sets from sticker messages this browser receives or sends,
   then uses `getStickerSet` to add every sticker currently in each discovered set.
@@ -33,7 +36,7 @@ shows this remediation in the affected chat and Webhook panel.
 ## Semi-stateless architecture
 
 ```text
-Telegram -> /telegram/webhook -> hibernating WebSocket fanout -> React memory
+Telegram -> client-leased webhook -> hibernating WebSocket fanout -> React memory
                                                               -> browser IndexedDB
 Bot API  <- authenticated, storage-free Worker proxy <- current browser
 ```
@@ -59,10 +62,18 @@ Cloudflare Worker logs and traces are disabled. Telegram files are returned with
 memoized locally.
 
 The Worker has no bot-token binding, credential database, or server session. The
-browser sends its local token on each API request. A session-only, same-origin
-browser cookie mirrors it solely for native image/video/audio requests and the
-browser WebSocket, which cannot set an Authorization header. The Worker consumes
-the credential transiently and never persists or logs it.
+browser can retain multiple validated bot accounts and sends only the active local
+token on each API request. Switching accounts returns to the browser-local chooser;
+each account keeps a separate IndexedDB timeline. A session-only, same-origin
+browser cookie mirrors the active token solely for native image/video/audio requests
+and the browser WebSocket, which cannot set an Authorization header. The Worker
+consumes the credential transiently and never persists or logs it.
+
+The webhook is a client lease. A connected dashboard installs it automatically;
+the last client removes Humanoid's own endpoint with `drop_pending_updates: false`
+on a normal close or account switch. Multiple tabs keep it alive. If a browser
+crashes before releasing the lease, the endpoint returns a retryable response while
+no dashboard is connected so Telegram does not receive a false acknowledgement.
 
 IndexedDB is not a Bot API history source. This dashboard only saves updates that
 reach an open browser and Message results from its own API calls. With the
@@ -90,6 +101,8 @@ most 24 hours), not legacy chats or arbitrary message history.
   session-only.
 - Lazy user/chat avatar resolution through Telegram. File IDs are memoized only in
   the current browser; avatar bytes are not cached by Humanoid.
+- A browser-local multi-bot account chooser with per-bot IndexedDB history and an
+  explicit forget action. Bot tokens never appear in account summaries.
 - Live raw updates, answerable callback/inline/payment/join queries, and a redacted
   API activity view, persisted locally with bounded history.
 - Admin tabs and actions are omitted unless a fresh `getChatMember` result says the
@@ -98,8 +111,8 @@ most 24 hours), not legacy chats or arbitrary message history.
 
 ## Security
 
-The bot token is saved in browser localStorage only after Telegram accepts it. It
-is never included in the static bundle, Wrangler configuration, Worker secrets,
+Bot tokens are saved in browser localStorage only after Telegram accepts them. They
+are never included in the static bundle, Wrangler configuration, Worker secrets,
 Durable Object storage, logs, or application databases. A session-only
 `SameSite=Strict` transport cookie enables authenticated native media and
 WebSockets. Mutation routes also require same-origin requests.
@@ -127,10 +140,10 @@ The ignored `.env` supplies `BOT_TOKEN` only to local verification commands. Do
 not upload it with Wrangler; production has no bot-token secret.
 
 `npm run dev:worker` serves the exported UI and Worker locally on port 3838. After
-deployment, choose **Updates -> Restore webhook** if Telegram delivery needs to be
-installed or repaired.
+deployment, opening an authenticated dashboard automatically installs the webhook.
+**Updates -> Restore webhook** remains available for manual repair.
 
 The live verifier passes the ignored `.env` token per request, checks that
 `/api/state` begins empty, exercises
-the Bot API proxy and avatar resolver, verifies the WebSocket and webhook, and does
-not send a Telegram message.
+the Bot API proxy and avatar resolver, verifies the WebSocket and webhook, proves
+the last client deregisters it, and does not send a Telegram message.

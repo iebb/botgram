@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const baseUrl = (process.env.HUMANOID_URL || "").replace(/\/$/, "");
 const token = process.env.BOT_TOKEN || "";
@@ -29,9 +29,10 @@ function expectStatus(result, status, label) {
   }
 }
 
-function connectEvents() {
+function connectEvents(clientId) {
   const url = new URL("/api/ws", baseUrl);
   url.protocol = "wss:";
+  url.searchParams.set("client", clientId);
   const socket = new WebSocket(url, {
     headers: { Authorization: `Bearer ${token}`, Origin: baseUrl },
   });
@@ -98,7 +99,8 @@ if (!meCall.body?.ok || meCall.body.result?.username !== state.body.me.username)
   throw new Error("The Bot API proxy returned a different bot identity");
 }
 
-const events = connectEvents();
+const clientId = randomUUID();
+const events = connectEvents(clientId);
 const initial = await events.next();
 if (initial?.type !== "ready") throw new Error("WebSocket did not begin with a ready event");
 
@@ -126,6 +128,24 @@ const avatar = await jsonRequest(
 expectStatus(avatar, 200, "avatar resolution");
 if (!avatar.body?.ok) throw new Error("The deployed avatar resolver failed");
 
+const release = await jsonRequest(
+  `/api/webhook/release?client=${encodeURIComponent(clientId)}`,
+  { method: "POST", body: "{}" }
+);
+expectStatus(release, 200, "webhook release");
+if (!release.body?.ok || release.body.released !== true) {
+  throw new Error(release.body?.description || "The last client did not release the webhook");
+}
+
+const releasedWebhookInfo = await jsonRequest(
+  "/api/tg",
+  { method: "POST", body: JSON.stringify({ method: "getWebhookInfo", params: {} }) }
+);
+expectStatus(releasedWebhookInfo, 200, "released getWebhookInfo");
+if (!releasedWebhookInfo.body?.ok || releasedWebhookInfo.body.result?.url) {
+  throw new Error("Telegram still has a webhook after the last client released it");
+}
+
 events.socket.close(1000, "verification complete");
 
 console.log(JSON.stringify({
@@ -138,6 +158,7 @@ console.log(JSON.stringify({
   botApiProxy: true,
   websocketReady: true,
   webhook: webhookInfo.body.result.url,
+  webhookDeregistered: true,
   pendingUpdates: webhookInfo.body.result.pending_update_count,
   lastWebhookError: webhookInfo.body.result.last_error_message || null,
   avatarResolution: true,

@@ -79,6 +79,9 @@ export default {
         if (url.pathname === "/api/webhook/install" && request.method === "POST") {
           return json(await installWebhook(env, url.origin, credential));
         }
+        if (url.pathname === "/api/webhook/release" && request.method === "POST") {
+          return json(await releaseWebhook(env, url.origin, credential, url.searchParams.get("client") || ""));
+        }
         return telegramError(404, "API route not found");
       }
 
@@ -198,7 +201,13 @@ async function handleTelegramWebhook(
 
   const body = await readJsonObject(request);
   if (!Number.isSafeInteger(body.update_id)) return new Response("Bad update", { status: 400 });
-  await getHub(env, hubKey).ingestUpdateJson(encodeJson(body));
+  const delivered = await getHub(env, hubKey).ingestUpdateIfConnectedJson(encodeJson(body));
+  if (!delivered) {
+    return new Response("No connected dashboard; retry this update", {
+      status: 503,
+      headers: { "retry-after": "1" },
+    });
+  }
   return new Response(null, { status: 204 });
 }
 
@@ -223,6 +232,56 @@ async function installWebhook(
   return call.response;
 }
 
+async function releaseWebhook(
+  env: Env,
+  origin: string,
+  credential: BotCredential,
+  clientId: string
+): Promise<TelegramResponse & { released: boolean }> {
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(clientId)) {
+    return { ok: false, error_code: 400, description: "A valid client id is required", released: false };
+  }
+
+  const hub = getHub(env, credential.hubKey);
+  if (await hub.releaseClientAndHasOthers(clientId)) {
+    return {
+      ok: true,
+      result: true,
+      description: "Webhook retained for another connected dashboard",
+      released: false,
+    };
+  }
+
+  const info = await callTelegramJson<TgAny>(env, credential.token, "getWebhookInfo");
+  if (!info.response.ok) return { ...info.response, released: false };
+  const webhookUrl = isRecord(info.response.result) && typeof info.response.result.url === "string"
+    ? info.response.result.url
+    : "";
+  if (!webhookUrl) {
+    await hub.setWebhookState(false, null);
+    return { ok: true, result: true, description: "Webhook was already absent", released: true };
+  }
+  if (!webhookUrl.startsWith(`${origin}/telegram/webhook/${credential.hubKey}/`)) {
+    return {
+      ok: true,
+      result: true,
+      description: "A non-Humanoid webhook was left unchanged",
+      released: false,
+    };
+  }
+
+  const removal = await callTelegramJson(env, credential.token, "deleteWebhook", {
+    drop_pending_updates: false,
+  });
+  if (removal.response.ok) {
+    await hub.setWebhookState(false, null);
+    // A client may have connected while Telegram processed deleteWebhook. Its own
+    // on-open install normally wins; this closes the remaining race as well.
+    if (await hub.hasActiveClients()) await installWebhook(env, origin, credential);
+  }
+  return { ...removal.response, released: removal.response.ok };
+}
+
 async function handleLegacyPolling(
   request: Request,
   env: Env,
@@ -239,7 +298,10 @@ async function handleLegacyPolling(
   }
   if (action === "skip") return json({ ok: true, description: "Webhooks have no local backlog" });
   if (action === "stop") {
-    return telegramError(409, "The production webhook stays enabled; use the API Console to remove it intentionally");
+    return telegramError(
+      409,
+      "The webhook follows connected dashboards; close or switch the last client to release it, or use the API Console to delete it intentionally"
+    );
   }
   return telegramError(400, "Unknown action");
 }

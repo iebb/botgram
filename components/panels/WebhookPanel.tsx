@@ -42,8 +42,9 @@ export default function WebhookPanel() {
           Refresh
         </button>
         <p className="muted" style={{ fontSize: "0.75rem", lineHeight: 1.5 }}>
-          Humanoid relays updates from this Worker endpoint to open browsers. Each browser saves
-          its own received updates in IndexedDB; the WebSocket coordinator stores no payloads.
+          Humanoid automatically registers this Worker endpoint while a dashboard is connected.
+          Closing or switching the last client removes it without dropping Telegram&apos;s pending
+          updates. Each browser saves received updates in IndexedDB; the coordinator stores no payloads.
         </p>
         <button
           className="btn sm primary"
@@ -54,7 +55,7 @@ export default function WebhookPanel() {
             if (result.ok) refresh();
           }}
         >
-          Restore this Worker webhook
+          Restore now
         </button>
       </div>
 
@@ -62,7 +63,8 @@ export default function WebhookPanel() {
         <div className="section-title">Advanced webhook override</div>
         <p className="muted" style={{ fontSize: "0.75rem", lineHeight: 1.5 }}>
           Changing or deleting the webhook intentionally pauses live updates in Humanoid. The full
-          Bot API remains available here for testing.
+          Bot API remains available here for testing. Reconnecting a dashboard restores Humanoid&apos;s
+          own endpoint.
         </p>
         <Field label="HTTPS URL">
           <TextInput value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/tg" />

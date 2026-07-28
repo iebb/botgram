@@ -119,7 +119,7 @@ export default function Sidebar({
                   void logout();
                 }}
               >
-                <span style={{ width: 18, textAlign: "center" }}>↪</span> Lock dashboard
+                <IconBot size={18} /> Switch account
               </button>
             </div>
           )}

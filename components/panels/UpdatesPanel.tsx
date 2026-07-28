@@ -19,7 +19,7 @@ export default function UpdatesPanel() {
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
           <span className={`dot ${p.lastError ? "err" : p.running ? "on" : "off"}`} />
           <div style={{ flex: 1, fontSize: "0.8125rem" }}>
-            {p.running ? "Telegram webhook active" : "Webhook needs attention"}
+            {p.running ? "Telegram webhook leased to this dashboard" : "Webhook connecting…"}
             <span className="muted">
               {p.lastPollAt ? ` · last update ${new Date(p.lastPollAt).toLocaleTimeString()}` : ""}
               {` · ${p.updatesSeen} saved updates`}
@@ -42,7 +42,7 @@ export default function UpdatesPanel() {
             className="btn sm primary"
             onClick={async () => {
               const result = await pollingApi("start");
-              notify(result.ok ? "Production webhook restored" : result.description || "Webhook restore failed", result.ok ? "ok" : "err");
+              notify(result.ok ? "Dashboard webhook restored" : result.description || "Webhook restore failed", result.ok ? "ok" : "err");
             }}
           >
             Restore webhook
