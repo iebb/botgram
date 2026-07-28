@@ -595,6 +595,36 @@ export function containsThinkingBlock(mode: RichMode, content: string): boolean 
   }
 }
 
+/** Removes every draft-only Thinking block before a persistent rich message is published. */
+export function removeThinkingBlocks(mode: RichMode, content: string): string {
+  if (mode !== "blocks") {
+    return content
+      .replace(/<tg-thinking\b[^>]*>[\s\S]*?<\/tg-thinking\s*>/gi, "")
+      .replace(/<tg-thinking\b[^>]*\/\s*>/gi, "")
+      .replace(/<\/?tg-thinking\b[^>]*>/gi, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  const remove = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+      return value
+        .map(remove)
+        .filter((item) => item !== undefined);
+    }
+    if (!value || typeof value !== "object") return value;
+    const object = value as TgAny;
+    if (object.type === "thinking") return undefined;
+    return Object.fromEntries(
+      Object.entries(object)
+        .map(([key, item]) => [key, remove(item)] as const)
+        .filter(([, item]) => item !== undefined)
+    );
+  };
+
+  return JSON.stringify(remove(parseRichBlocks(content)), null, 2);
+}
+
 export function extractRichMediaIds(content: string): Set<string> {
   const result = new Set<string>();
   for (const match of content.matchAll(/tg:\/\/(?:photo|video|audio)\?id=([A-Za-z0-9_-]+)/g)) {

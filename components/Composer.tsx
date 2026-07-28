@@ -108,6 +108,7 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
   const [showOpts, setShowOpts] = useState(false);
   const [busy, setBusy] = useState(false);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const [thinkingIntervalSeconds, setThinkingIntervalSeconds] = useState(3);
   const [thinkingSentAt, setThinkingSentAt] = useState<number | null>(null);
 
   const [opts, setOpts] = useState({
@@ -140,7 +141,8 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
   const thinkingPending = useRef<Promise<void> | null>(null);
   const thinkingLastSignature = useRef("");
   const thinkingLastSuccessAt = useRef(0);
-  const canStreamThinking = Boolean(selectedChatId && chat?.chat.type === "private" && !editing);
+  const isPrivateChat = chat?.chat.type === "private";
+  const canStreamThinking = Boolean(selectedChatId && isPrivateChat && !editing);
   const thinkingInput = useRef({
     eligible: false,
     chatId: "",
@@ -239,14 +241,14 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
     };
     thinkingRequested.current = true;
     const first = window.setTimeout(runPublish, 600);
-    const interval = window.setInterval(runPublish, 3_000);
+    const interval = window.setInterval(runPublish, thinkingIntervalSeconds * 1_000);
     return () => {
       active = false;
       thinkingRequested.current = false;
       window.clearTimeout(first);
       window.clearInterval(interval);
     };
-  }, [call, notify, thinkingEnabled]);
+  }, [call, notify, thinkingEnabled, thinkingIntervalSeconds]);
 
   if (!selectedChatId) return null;
 
@@ -543,33 +545,6 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
             <button className="chip accent" onClick={onOpenRichEditor} title="Open the dedicated Rich Message Studio">
               Rich studio
             </button>
-            <label
-              className={`composer-thinking-toggle${thinkingEnabled ? " active" : ""}${!canStreamThinking ? " disabled" : ""}`}
-              title={canStreamThinking
-                ? "Publish the unfinished input as a private 30-second rich draft every 3 seconds"
-                : editing
-                  ? "Finish editing before streaming a draft"
-                  : "Telegram only supports rich drafts in the current private chat"}
-            >
-              <input
-                type="checkbox"
-                checked={thinkingEnabled}
-                disabled={!canStreamThinking || busy}
-                onChange={(event) => {
-                  thinkingRequested.current = event.target.checked;
-                  thinkingLastSignature.current = "";
-                  thinkingLastSuccessAt.current = 0;
-                  setThinkingSentAt(null);
-                  setThinkingEnabled(event.target.checked);
-                }}
-              />
-              <span>Stream unfinished input with Thinking every 3 seconds</span>
-              {thinkingEnabled && (
-                <span className="composer-thinking-status">
-                  {thinkingSentAt ? new Date(thinkingSentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "waiting"}
-                </span>
-              )}
-            </label>
             {kbActive && (
               <button className="chip accent" onClick={() => setShowKb(true)}>
                 {kb.mode} keyboard ·{" "}
@@ -870,9 +845,50 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
           </div>
         </div>
 
-        <button className="send-btn" onClick={send} disabled={busy || !text.trim()}>
-          <IconSend size={24} />
-        </button>
+        <div className="composer-send-stack">
+          {isPrivateChat && !editing && (
+            <div
+              className={`composer-thinking-quick${thinkingEnabled ? " active" : ""}`}
+              title={thinkingEnabled
+                ? `Thinking is on · updating every ${thinkingIntervalSeconds}s${thinkingSentAt ? ` · last sent ${new Date(thinkingSentAt).toLocaleTimeString()}` : " · waiting for input"}`
+                : "Thinking is off · stream unfinished input as a temporary private-chat draft"}
+            >
+              <label className="composer-thinking-checkbox">
+                <input
+                  type="checkbox"
+                  checked={thinkingEnabled}
+                  disabled={!canStreamThinking || busy}
+                  aria-label="Stream unfinished input with Thinking"
+                  onChange={(event) => {
+                    thinkingRequested.current = event.target.checked;
+                    thinkingLastSignature.current = "";
+                    thinkingLastSuccessAt.current = 0;
+                    setThinkingSentAt(null);
+                    setThinkingEnabled(event.target.checked);
+                  }}
+                />
+                <span className="composer-thinking-checkmark" aria-hidden="true">
+                  <IconBolt size={13} />
+                </span>
+              </label>
+              <select
+                className="composer-thinking-interval"
+                value={thinkingIntervalSeconds}
+                disabled={busy}
+                aria-label="Thinking update interval"
+                title="Thinking update interval"
+                onChange={(event) => setThinkingIntervalSeconds(Number(event.target.value))}
+              >
+                <option value={1}>1s</option>
+                <option value={3}>3s</option>
+                <option value={5}>5s</option>
+              </select>
+            </div>
+          )}
+          <button className="send-btn" onClick={send} disabled={busy || !text.trim()}>
+            <IconSend size={24} />
+          </button>
+        </div>
       </div>
 
       {showKb && (

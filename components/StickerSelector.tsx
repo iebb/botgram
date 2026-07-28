@@ -11,7 +11,7 @@ import {
 import type { TgAny } from "@/lib/types";
 import { useStore } from "./Store";
 import StickerMedia from "./StickerMedia";
-import { IconClose } from "./Icons";
+import { IconClock, IconClose, IconRefresh, IconSearch, IconSticker } from "./Icons";
 
 interface StickerSelectorProps {
   busy?: boolean;
@@ -49,48 +49,69 @@ export default function StickerSelector({ busy, onClose, onSelect }: StickerSele
   return (
     <div className="sticker-selector" role="dialog" aria-label="Sticker selector">
       <div className="sticker-selector-head">
-        <input
-          className="sticker-search"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search stickers and sets"
-          aria-label="Search stickers and sets"
-          autoFocus
-        />
-        <button className="icon-btn" onClick={onClose} aria-label="Close sticker selector">
-          <IconClose size={18} />
-        </button>
+        <div className="sticker-selector-title-row">
+          <div className="sticker-selector-title">
+            <span className="sticker-selector-title-icon"><IconSticker size={19} /></span>
+            <div>
+              <strong>Stickers</strong>
+              <span>{allEntries.length} received · sorted by use</span>
+            </div>
+          </div>
+          <button className="icon-btn" onClick={onClose} aria-label="Close sticker selector">
+            <IconClose size={18} />
+          </button>
+        </div>
+        <label className="sticker-search-wrap">
+          <IconSearch size={16} />
+          <input
+            className="sticker-search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search emoji or sticker set"
+            aria-label="Search stickers and sets"
+          />
+          {search && (
+            <button type="button" onClick={() => setSearch("")} aria-label="Clear sticker search">
+              <IconClose size={14} />
+            </button>
+          )}
+        </label>
       </div>
 
       <div className="sticker-set-tabs" role="tablist" aria-label="Received sticker sets">
         <button
-          className={`sticker-set-tab${active === FREQUENT ? " active" : ""}`}
+          className={`sticker-set-tab sticker-set-tab-icon${active === FREQUENT ? " active" : ""}`}
           onClick={() => {
             setSearch("");
             setActive(FREQUENT);
           }}
           role="tab"
           aria-selected={active === FREQUENT}
+          aria-label="Frequently used stickers"
+          title="Frequently used"
         >
-          <span>🕘</span>
-          <span>Frequent</span>
+          <IconClock size={19} />
         </button>
         {sets.map((set) => {
           const first = set.order.map((key) => set.stickers[key]).find(Boolean);
           return (
             <button
               key={set.name}
-              className={`sticker-set-tab${active === set.name ? " active" : ""}`}
+              className={`sticker-set-tab sticker-set-tab-icon${active === set.name ? " active" : ""}`}
               onClick={() => {
                 setSearch("");
                 setActive(set.name);
               }}
               role="tab"
               aria-selected={active === set.name}
+              aria-label={set.title}
               title={`${set.title} · used ${set.useCount} times`}
             >
-              <span>{first?.sticker.emoji || "◻️"}</span>
-              <span>{set.title}</span>
+              {first ? (
+                <StickerMedia sticker={first.sticker} className="sticker-tab-media" />
+              ) : (
+                <span className="sticker-tab-fallback">◻️</span>
+              )}
             </button>
           );
         })}
@@ -107,7 +128,7 @@ export default function StickerSelector({ busy, onClose, onSelect }: StickerSele
             onClick={() => refreshStickerSet(activeSet.name)}
             title="Refresh this set from Telegram"
           >
-            {activeSet.hydratedAt ? "Refresh" : "Load full set"}
+            <IconRefresh size={13} /> {activeSet.hydratedAt ? "Refresh" : "Load set"}
           </button>
         )}
       </div>
@@ -145,15 +166,17 @@ export default function StickerSelector({ busy, onClose, onSelect }: StickerSele
         })}
         {!entries.length && (
           <div className="sticker-selector-empty">
-            {search.trim()
-              ? "No matching stickers"
-              : "Stickers and their complete sets appear here after this browser receives or sends one."}
+            <span className="sticker-selector-empty-icon"><IconSticker size={25} /></span>
+            <strong>{search.trim() ? "No stickers found" : "No stickers yet"}</strong>
+            <span>{search.trim()
+              ? "Try an emoji or another sticker-set name."
+              : "Received and sent sticker sets will appear here automatically."}</span>
           </div>
         )}
       </div>
 
       <div className="sticker-selector-foot">
-        Set metadata and frequency stay in this browser. Sticker files load from Telegram on demand.
+        <span>Animated previews</span><span>Browser-only history</span><span>Frequency ranked</span>
       </div>
     </div>
   );

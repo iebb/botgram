@@ -16,6 +16,7 @@ import {
   containsThinkingBlock,
   extractRichCustomEmojis,
   parseRichBlocks,
+  removeThinkingBlocks,
   richMediaMarkup,
   validateRichMessage,
   type RichMediaDescriptor,
@@ -187,7 +188,9 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
       : uploads.length > 0
         ? "New local uploads cannot be included in a streamed draft."
         : "";
-  const draftOnly = containsThinkingBlock(mode, content);
+  const hasThinkingBlocks = containsThinkingBlock("html", sources.html)
+    || containsThinkingBlock("markdown", sources.markdown)
+    || containsThinkingBlock("blocks", sources.blocks);
   liveDraftInput.current = {
     eligible: canStream,
     target,
@@ -444,8 +447,8 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
     setUploads((current) => current.filter((candidate) => candidate.field !== field));
   };
 
-  const buildParams = () => {
-    const richMessage = buildInputRichMessage(mode, content, rtl, skipDetection, descriptors);
+  const buildParams = (contentOverride = content) => {
+    const richMessage = buildInputRichMessage(mode, contentOverride, rtl, skipDetection, descriptors);
     const chatId: number | string = /^-?\d+$/.test(target.trim()) ? Number(target) : target.trim();
     const suggested = parseOptionalObject(options.suggestedPostParameters, "suggested_post_parameters");
     const reply = options.useReply && replyTo && selectedChatId === target
@@ -484,9 +487,31 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   const send = async (asDraft: boolean) => {
     if (!target.trim()) return notify("Open the chat that should receive this rich message", "err");
     if (validation.errors.length) return notify(validation.errors[0], "err");
-    if (!asDraft && draftOnly) return notify("Remove the thinking block before sending the permanent message", "err");
     if (asDraft && !canStream) {
       return notify("Streamed rich drafts require a known private chat and cannot upload new files", "err");
+    }
+    let sendContent = content;
+    if (!asDraft && hasThinkingBlocks) {
+      const confirmed = window.confirm(
+        "Thinking blocks are temporary and cannot be published. Remove all Thinking blocks from this draft and send the cleaned rich message?"
+      );
+      if (!confirmed) return;
+      let cleanedBlocks = sources.blocks;
+      try {
+        cleanedBlocks = removeThinkingBlocks("blocks", sources.blocks);
+      } catch {
+        // An inactive malformed block representation must not prevent a valid
+        // HTML or Markdown representation from being published.
+      }
+      const cleanedSources: RichSources = {
+        html: removeThinkingBlocks("html", sources.html),
+        markdown: removeThinkingBlocks("markdown", sources.markdown),
+        blocks: cleanedBlocks,
+      };
+      sendContent = cleanedSources[mode];
+      setSources(cleanedSources);
+      const cleanedValidation = validateRichMessage(mode, sendContent, rtl, skipDetection, descriptors);
+      if (cleanedValidation.errors.length) return notify(cleanedValidation.errors[0], "err");
     }
     if (!asDraft) {
       liveDraftRequested.current = false;
@@ -495,7 +520,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
     setBusy(asDraft ? "draft" : "send");
     try {
       if (!asDraft && liveDraftPending.current) await liveDraftPending.current;
-      const customEmojis = extractRichCustomEmojis(mode, content);
+      const customEmojis = extractRichCustomEmojis(mode, sendContent);
       if (customEmojis.length) {
         const customEmojiResult = await call<TgAny[]>("getCustomEmojiStickers", {
           custom_emoji_ids: [...new Set(customEmojis.map((emoji) => emoji.id))],
@@ -510,7 +535,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
           return;
         }
       }
-      const params = buildParams();
+      const params = buildParams(sendContent);
       const response = asDraft
         ? await call("sendRichMessageDraft", {
             chat_id: Number(target),
@@ -612,25 +637,27 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
               )}
             </div>
 
-            <div className="rich-studio-section rich-thinking-card">
-              <div className="section-title">Live thinking draft</div>
-              <label className={`rich-live-draft-toggle${!canStream ? " disabled" : ""}`}>
-                <input
-                  type="checkbox"
-                  checked={liveDraftEnabled}
-                  disabled={!canStream}
-                  onChange={(event) => toggleLiveDraft(event.target.checked)}
-                />
-                <span>Stream unfinished input with Thinking every 3 seconds</span>
-              </label>
-              <p className="muted rich-studio-help">
-                {streamUnavailableReason || (liveDraftEnabled
-                  ? liveDraftSentAt
-                    ? `Updated ${new Date(liveDraftSentAt).toLocaleTimeString()}`
-                    : "Waiting for content…"
-                  : "Publishes a temporary 30-second preview under this draft id while you type.")}
-              </p>
-            </div>
+            {selectedTargetChat?.chat.type === "private" && (
+              <div className="rich-studio-section rich-thinking-card">
+                <div className="section-title">Live thinking draft</div>
+                <label className={`rich-live-draft-toggle${!canStream ? " disabled" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={liveDraftEnabled}
+                    disabled={!canStream}
+                    onChange={(event) => toggleLiveDraft(event.target.checked)}
+                  />
+                  <span>Stream unfinished input with Thinking every 3 seconds</span>
+                </label>
+                <p className="muted rich-studio-help">
+                  {streamUnavailableReason || (liveDraftEnabled
+                    ? liveDraftSentAt
+                      ? `Updated ${new Date(liveDraftSentAt).toLocaleTimeString()}`
+                      : "Waiting for content…"
+                    : "Publishes a temporary 30-second preview under this draft id while you type.")}
+                </p>
+              </div>
+            )}
 
             <div className="rich-studio-section">
               <div className="section-title">Templates</div>
@@ -793,7 +820,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
           <button className="btn" disabled={busy !== null || liveDraftEnabled || !canStream || validation.errors.length > 0} onClick={() => void send(true)}>
             {busy === "draft" ? "Streaming…" : "Stream 30s draft"}
           </button>
-          <button className="btn primary rich-send" disabled={busy !== null || !target.trim() || validation.errors.length > 0 || draftOnly} onClick={() => void send(false)}>
+          <button className="btn primary rich-send" disabled={busy !== null} onClick={() => void send(false)}>
             <IconSend size={18} /> {busy === "send" ? "Sending…" : "Send rich message"}
           </button>
         </footer>

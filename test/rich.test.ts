@@ -10,6 +10,7 @@ import {
   containsThinkingBlock,
   extractRichCustomEmojis,
   richMediaMarkup,
+  removeThinkingBlocks,
   validateRichMessage,
   validEmojiAlternative,
 } from "../lib/rich";
@@ -85,6 +86,35 @@ describe("Rich Message Studio payloads", () => {
     expect(buildPlainTextRichMessage("2 < 3\nready")).toEqual({
       html: "2 &lt; 3<br>ready",
     });
+  });
+
+  it("removes every temporary thinking block before permanent publishing", () => {
+    expect(removeThinkingBlocks(
+      "html",
+      "<h2>Ready</h2><tg-thinking>First</tg-thinking><p>Body</p><tg-thinking>Second</tg-thinking>"
+    )).toBe("<h2>Ready</h2><p>Body</p>");
+    expect(removeThinkingBlocks(
+      "markdown",
+      "## Ready\n\n<tg-thinking>Working…</tg-thinking>\n\nBody"
+    )).toBe("## Ready\n\nBody");
+    expect(JSON.parse(removeThinkingBlocks(
+      "blocks",
+      JSON.stringify([
+        { type: "thinking", text: "Top" },
+        {
+          type: "details",
+          blocks: [
+            { type: "paragraph", text: "Keep" },
+            { type: "thinking", text: "Nested" },
+          ],
+        },
+      ])
+    ))).toEqual([
+      {
+        type: "details",
+        blocks: [{ type: "paragraph", text: "Keep" }],
+      },
+    ]);
   });
 
   it("uses Telegram's three supported rich-media reference schemes", () => {

@@ -32,29 +32,16 @@ export default function AppShell() {
       {panelOpen && <RightPanel tab={tab} setTab={setTab} onClose={() => setPanelOpen(false)} />}
       {richEditorOpen && <RichMessageEditor onClose={() => setRichEditorOpen(false)} />}
 
-      {!state.connected && (
-        <div
-          style={{
-            position: "fixed",
-            top: "0.75rem",
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 400,
-            background: "var(--warning)",
-            color: "#000",
-            padding: "0.25rem 0.75rem",
-            borderRadius: "1rem",
-            fontSize: "0.75rem",
-            fontWeight: 500,
-          }}
-        >
-          Reconnecting to the update stream…
-        </div>
-      )}
-
-      <div className="toast-stack">
+      <div className="toast-stack" aria-live="polite" aria-atomic="true">
+        {!state.connected && (
+          <div className="toast warning" role="status">Reconnecting to the update stream…</div>
+        )}
         {toasts.map((t) => (
-          <div key={t.id} className={`toast${t.kind === "err" ? " err" : ""}`}>
+          <div
+            key={t.id}
+            className={`toast${t.kind === "err" ? " err" : ""}`}
+            role={t.kind === "err" ? "alert" : "status"}
+          >
             {t.text}
           </div>
         ))}
