@@ -19,6 +19,7 @@ import {
   IconStar,
 } from "./Icons";
 import RichMessageContent from "./RichMessageContent";
+import StickerMedia from "./StickerMedia";
 
 const MEDIA_RADIUS = "0.5rem";
 
@@ -269,35 +270,8 @@ function Audio({ m }: { m: StoredMessage }) {
 
 function Sticker({ m }: { m: StoredMessage }) {
   const s = m.sticker as TgAny;
-  const animated = s.is_animated || s.is_video;
-  // .tgs/.webm stickers can't be drawn by the browser; fall back to the thumb.
-  const src = animated
-    ? s.thumbnail
-      ? fileSrc(s.thumbnail.file_id)
-      : ""
-    : fileSrc(s.file_id);
-
   return (
-    <div style={{ position: "relative", width: "8.75rem", height: "8.75rem" }}>
-      {src ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={src}
-          alt={s.emoji || "sticker"}
-          style={{ width: "100%", height: "100%", objectFit: "contain" }}
-        />
-      ) : (
-        <div style={{ fontSize: "4.5rem", textAlign: "center" }}>{s.emoji || "🙂"}</div>
-      )}
-      {animated && (
-        <span
-          className="chip"
-          style={{ position: "absolute", bottom: 0, left: 0, fontSize: "0.5625rem" }}
-        >
-          {s.is_video ? "VIDEO" : "ANIMATED"}
-        </span>
-      )}
-    </div>
+    <StickerMedia sticker={s} className="message-sticker" label={s.emoji || "Sticker"} />
   );
 }
 

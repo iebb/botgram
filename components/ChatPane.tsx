@@ -11,6 +11,11 @@ import type { MsgAction } from "./MessageItem";
 import type { StoredMessage, TgAny } from "@/lib/types";
 import { chatKindLabel, chatName } from "@/lib/format";
 import {
+  canDeleteOtherMessages,
+  canPinMessages,
+  isBotAdministrator,
+} from "@/lib/chatPermissions";
+import {
   IconArrowLeft,
   IconBot,
   IconCode,
@@ -43,8 +48,18 @@ export default function ChatPane({
   onOpenRichEditor: () => void;
   panelOpen: boolean;
 }) {
-  const { chat, messages, state, selectedChatId, selectChat, call, notify, setReplyTo, setEditing } =
-    useStore();
+  const {
+    chat,
+    messages,
+    state,
+    selectedChatId,
+    selectChat,
+    call,
+    notify,
+    setReplyTo,
+    setEditing,
+    botChatMember,
+  } = useStore();
 
   const [menu, setMenu] = useState<{ m: StoredMessage; x: number; y: number } | null>(null);
   const [jsonOf, setJsonOf] = useState<StoredMessage | null>(null);
@@ -88,6 +103,8 @@ export default function ChatPane({
 
   const me = state.me;
   const isBotMessage = (m: StoredMessage) => m.from?.id === me?.id;
+  const canAdminister = isBotAdministrator(botChatMember);
+  const canPin = canPinMessages(chat.chat, botChatMember);
 
   const onAction: (a: MsgAction, m: StoredMessage, e?: React.MouseEvent) => void = (a, m, e) => {
     if (a === "json" && e) {
@@ -199,13 +216,15 @@ export default function ChatPane({
         >
           <IconBot />
         </button>
-        <button
-          className="icon-btn"
-          title="Members & admin"
-          onClick={() => onOpenPanel("admin")}
-        >
-          <IconUsers />
-        </button>
+        {canAdminister && (
+          <button
+            className="icon-btn"
+            title="Members & admin"
+            onClick={() => onOpenPanel("admin")}
+          >
+            <IconUsers />
+          </button>
+        )}
         <button
           className={`icon-btn${panelOpen ? " active" : ""}`}
           title="Chat info"
@@ -257,6 +276,9 @@ export default function ChatPane({
         <div ref={menuRef} className="ctx-menu" style={{ left: menu.x, top: menu.y }}>
           {(() => {
             const ephemeral = typeof menu.m.ephemeral_message_id === "number";
+            const canDelete = isBotMessage(menu.m)
+              || chat.chat.type === "private"
+              || canDeleteOtherMessages(botChatMember);
             return <>
           <MenuItem icon={<IconReply size={17} />} label="Reply" onClick={() => act("reply", menu.m)} />
           {isBotMessage(menu.m) && (menu.m.text || menu.m.caption) && (
@@ -280,8 +302,8 @@ export default function ChatPane({
           {!ephemeral && <MenuItem icon={<IconSmile size={17} />} label="Set reaction" onClick={() => act("react", menu.m)} />}
           {!ephemeral && <MenuItem icon={<IconForward size={17} />} label="Forward to…" onClick={() => act("forward", menu.m)} />}
           {!ephemeral && <MenuItem icon={<IconCopy size={17} />} label="Copy to… (no author)" onClick={() => act("copy", menu.m)} />}
-          {!ephemeral && <MenuItem icon={<IconPin size={17} />} label="Pin" onClick={() => act("pin", menu.m)} />}
-          {!ephemeral && <MenuItem icon={<IconPin size={17} />} label="Unpin" onClick={() => act("unpin", menu.m)} />}
+          {!ephemeral && canPin && <MenuItem icon={<IconPin size={17} />} label="Pin" onClick={() => act("pin", menu.m)} />}
+          {!ephemeral && canPin && <MenuItem icon={<IconPin size={17} />} label="Unpin" onClick={() => act("unpin", menu.m)} />}
           {!ephemeral && menu.m.poll && !menu.m.poll.is_closed && (
             <MenuItem icon={<IconPoll size={17} />} label="Stop poll" onClick={() => act("stop-poll", menu.m)} />
           )}
@@ -298,13 +320,17 @@ export default function ChatPane({
             onClick={() => act("copy-id", menu.m)}
           />
           <MenuItem icon={<IconCode size={17} />} label="Inspect JSON" onClick={() => act("json", menu.m)} />
-          <div style={{ borderTop: "1px solid var(--panel-border)", margin: "0.25rem 0" }} />
-          <MenuItem
-            icon={<IconTrash size={17} />}
-            label="Delete"
-            danger
-            onClick={() => act("delete", menu.m)}
-          />
+          {canDelete && (
+            <>
+              <div style={{ borderTop: "1px solid var(--panel-border)", margin: "0.25rem 0" }} />
+              <MenuItem
+                icon={<IconTrash size={17} />}
+                label="Delete"
+                danger
+                onClick={() => act("delete", menu.m)}
+              />
+            </>
+          )}
             </>;
           })()}
         </div>

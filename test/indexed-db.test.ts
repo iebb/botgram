@@ -1,16 +1,20 @@
 import "fake-indexeddb/auto";
 import { afterAll, describe, expect, it } from "vitest";
 import type { AppSnapshot } from "../lib/types";
+import { emptyStickerLibrary, mergeStickerSet } from "../lib/stickers";
 import {
   BROWSER_DB_NAME,
   clearDashboard,
+  clearStickerLibrary,
   closeBrowserDatabase,
   loadDashboard,
   loadPreference,
   loadRichDraft,
+  loadStickerLibrary,
   saveDashboard,
   savePreference,
   saveRichDraft,
+  saveStickerLibrary,
 } from "../lib/client/indexedDb";
 
 const BOT_ID = "424242";
@@ -82,5 +86,33 @@ describe("browser IndexedDB state", () => {
     await expect(loadDashboard(BOT_ID)).resolves.toBeNull();
     await expect(loadPreference("theme")).resolves.toBe("light");
     await expect(loadRichDraft(BOT_ID)).resolves.toEqual({ version: 1, source: "<h1>Draft</h1>" });
+  });
+
+  it("round-trips and clears the per-bot sticker catalog", async () => {
+    const library = mergeStickerSet(emptyStickerLibrary(BOT_ID, 1), {
+      name: "AnimatedFriends",
+      title: "Animated Friends",
+      sticker_type: "regular",
+      stickers: [{
+        file_id: "animated-file-id",
+        file_unique_id: "animated-unique-id",
+        emoji: "👋",
+        is_animated: true,
+        is_video: false,
+      }],
+    }, 2);
+
+    await saveStickerLibrary(library);
+    await expect(loadStickerLibrary(BOT_ID)).resolves.toMatchObject({
+      botId: BOT_ID,
+      sets: {
+        AnimatedFriends: {
+          title: "Animated Friends",
+          order: ["animated-unique-id"],
+        },
+      },
+    });
+    await clearStickerLibrary(BOT_ID);
+    await expect(loadStickerLibrary(BOT_ID)).resolves.toBeNull();
   });
 });

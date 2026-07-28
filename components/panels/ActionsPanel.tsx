@@ -5,6 +5,7 @@ import { useStore } from "../Store";
 import { Collapsible, Field, Json, Select, TextArea, TextInput, Toggle } from "../UI";
 import { chatName } from "@/lib/format";
 import type { TgAny } from "@/lib/types";
+import { canDeleteOtherMessages, canPinMessages } from "@/lib/chatPermissions";
 
 const CHAT_ACTIONS = [
   "typing",
@@ -21,7 +22,7 @@ const CHAT_ACTIONS = [
 ];
 
 export default function ActionsPanel() {
-  const { selectedChatId, chat, call, notify, state } = useStore();
+  const { selectedChatId, chat, call, notify, botChatMember } = useStore();
   const [result, setResult] = useState<unknown>(null);
 
   if (!selectedChatId || !chat) {
@@ -59,7 +60,12 @@ export default function ActionsPanel() {
         </div>
       </div>
 
-      <BulkMessages chat_id={chat_id} run={run} />
+      <BulkMessages
+        chat_id={chat_id}
+        run={run}
+        canDelete={chat.chat.type === "private" || canDeleteOtherMessages(botChatMember)}
+        canPin={canPinMessages(chat.chat, botChatMember)}
+      />
       <LiveLocation chat_id={chat_id} run={run} />
       <Broadcast />
       <PreparedInline />
@@ -76,7 +82,17 @@ export default function ActionsPanel() {
 
 type Run = (method: string, params: TgAny, okMsg?: string) => Promise<void>;
 
-function BulkMessages({ chat_id, run }: { chat_id: number; run: Run }) {
+function BulkMessages({
+  chat_id,
+  run,
+  canDelete,
+  canPin,
+}: {
+  chat_id: number;
+  run: Run;
+  canDelete: boolean;
+  canPin: boolean;
+}) {
   const { state } = useStore();
   const [ids, setIds] = useState("");
   const [target, setTarget] = useState("");
@@ -134,18 +150,22 @@ function BulkMessages({ chat_id, run }: { chat_id: number; run: Run }) {
         >
           copyMessages
         </button>
-        <button
-          className="btn sm danger"
-          onClick={() => run("deleteMessages", { chat_id, message_ids: parsed }, "Deleted")}
-        >
-          deleteMessages
-        </button>
-        <button
-          className="btn sm"
-          onClick={() => run("unpinAllChatMessages", { chat_id }, "All unpinned")}
-        >
-          unpinAllChatMessages
-        </button>
+        {canDelete && (
+          <button
+            className="btn sm danger"
+            onClick={() => run("deleteMessages", { chat_id, message_ids: parsed }, "Deleted")}
+          >
+            deleteMessages
+          </button>
+        )}
+        {canPin && (
+          <button
+            className="btn sm"
+            onClick={() => run("unpinAllChatMessages", { chat_id }, "All unpinned")}
+          >
+            unpinAllChatMessages
+          </button>
+        )}
       </div>
     </Collapsible>
   );

@@ -3,11 +3,11 @@
 import React, { useState } from "react";
 import { useStore } from "../Store";
 import { Collapsible, Field, Json, Select, TextArea, TextInput } from "../UI";
-import { fileSrc } from "@/lib/format";
 import type { TgAny } from "@/lib/types";
+import StickerMedia from "../StickerMedia";
 
 export default function StickersPanel() {
-  const { call, upload, notify, selectedChatId, state } = useStore();
+  const { call, notify, selectedChatId, rememberStickerSet } = useStore();
   const [name, setName] = useState("");
   const [set, setSet] = useState<TgAny | null>(null);
   const [result, setResult] = useState<unknown>(null);
@@ -21,7 +21,10 @@ export default function StickersPanel() {
 
   const load = async () => {
     const res = await call("getStickerSet", { name });
-    if (res.ok) setSet(res.result);
+    if (res.ok) {
+      setSet(res.result);
+      rememberStickerSet(res.result);
+    }
   };
 
   return (
@@ -81,25 +84,7 @@ export default function StickersPanel() {
                     if (res.ok) notify("Sticker sent");
                   }}
                 >
-                  {s.is_animated || s.is_video ? (
-                    s.thumbnail ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={fileSrc(s.thumbnail.file_id)}
-                        alt={s.emoji}
-                        style={{ maxWidth: "100%", maxHeight: "100%" }}
-                      />
-                    ) : (
-                      <span style={{ fontSize: "1.5rem" }}>{s.emoji}</span>
-                    )
-                  ) : (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={fileSrc(s.file_id)}
-                      alt={s.emoji}
-                      style={{ maxWidth: "100%", maxHeight: "100%" }}
-                    />
-                  )}
+                  <StickerMedia sticker={s} />
                 </button>
               ))}
             </div>

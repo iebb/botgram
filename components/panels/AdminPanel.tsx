@@ -5,6 +5,12 @@ import { useStore } from "../Store";
 import { Collapsible, Field, Json, Select, TextArea, TextInput, Toggle } from "../UI";
 import { userName } from "@/lib/format";
 import type { TgAny } from "@/lib/types";
+import {
+  canPinMessages,
+  canSetChatStickerSet,
+  hasAdminPermission,
+  isBotAdministrator,
+} from "@/lib/chatPermissions";
 
 const MEMBER_PERMS = [
   "can_send_messages",
@@ -21,6 +27,8 @@ const MEMBER_PERMS = [
   "can_invite_users",
   "can_pin_messages",
   "can_manage_topics",
+  "can_manage_direct_messages",
+  "can_manage_tags",
 ];
 
 const ADMIN_RIGHTS = [
@@ -42,7 +50,7 @@ const ADMIN_RIGHTS = [
 ];
 
 export default function AdminPanel() {
-  const { chat, selectedChatId, call, notify } = useStore();
+  const { chat, selectedChatId, call, notify, botChatMember } = useStore();
   const [result, setResult] = useState<unknown>(null);
 
   if (!chat || !selectedChatId) {
@@ -52,8 +60,21 @@ export default function AdminPanel() {
       </div>
     );
   }
+  if (!isBotAdministrator(botChatMember)) return null;
   const chat_id = Number(selectedChatId);
   const knownUsers = Object.values(chat.knownUsers || {}) as TgAny[];
+  const canPromote = hasAdminPermission(botChatMember, "can_promote_members");
+  const canRestrict = hasAdminPermission(botChatMember, "can_restrict_members");
+  const canChangeInfo = hasAdminPermission(botChatMember, "can_change_info");
+  const canInvite = hasAdminPermission(botChatMember, "can_invite_users");
+  const canManageTopics = hasAdminPermission(botChatMember, "can_manage_topics");
+  const canPin = canPinMessages(chat.chat, botChatMember);
+  const canSetStickerSet = canSetChatStickerSet(chat.chat, botChatMember);
+  const grantableRights = ADMIN_RIGHTS.filter((right) =>
+    right === "is_anonymous"
+    || botChatMember?.status === "creator"
+    || botChatMember?.[right] === true
+  );
 
   const run = async (method: string, params: TgAny, okMsg?: string) => {
     const res = await call(method, params);
@@ -63,11 +84,26 @@ export default function AdminPanel() {
 
   return (
     <div className="scroll-y" style={{ flex: 1 }}>
-      <Members chat_id={chat_id} knownUsers={knownUsers} run={run} />
-      <Restrictions chat_id={chat_id} knownUsers={knownUsers} run={run} />
-      <ChatSettings chat_id={chat_id} run={run} />
-      <InviteLinks chat_id={chat_id} run={run} />
-      {chat.chat.is_forum && <ForumTopics chat_id={chat_id} run={run} />}
+      <Members
+        chat_id={chat_id}
+        knownUsers={knownUsers}
+        run={run}
+        canPromote={canPromote}
+        grantableRights={grantableRights}
+      />
+      {canRestrict && <Restrictions chat_id={chat_id} knownUsers={knownUsers} run={run} />}
+      {(canChangeInfo || canRestrict || canPin || canSetStickerSet) && (
+        <ChatSettings
+          chat_id={chat_id}
+          run={run}
+          canChangeInfo={canChangeInfo}
+          canRestrict={canRestrict}
+          canPin={canPin}
+          canSetStickerSet={canSetStickerSet}
+        />
+      )}
+      {canInvite && <InviteLinks chat_id={chat_id} run={run} />}
+      {chat.chat.is_forum && canManageTopics && <ForumTopics chat_id={chat_id} run={run} />}
       <Danger chat_id={chat_id} run={run} />
 
       {result != null && (
@@ -114,10 +150,14 @@ function Members({
   chat_id,
   knownUsers,
   run,
+  canPromote,
+  grantableRights,
 }: {
   chat_id: number;
   knownUsers: TgAny[];
   run: Run;
+  canPromote: boolean;
+  grantableRights: string[];
 }) {
   const [uid, setUid] = useState("");
   const [title, setTitle] = useState("");
@@ -149,7 +189,7 @@ function Members({
         <button
           className="btn sm"
           onClick={() =>
-            run("getUserProfilePhotos", { chat_id, user_id: Number(uid), limit: 5 })
+            run("getUserProfilePhotos", { user_id: Number(uid), limit: 5 })
           }
         >
           Profile photos
@@ -162,57 +202,65 @@ function Members({
         </button>
       </div>
 
-      <div className="section-title">Promote</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 0.5rem" }}>
-        {ADMIN_RIGHTS.map((r) => (
-          <Toggle
-            key={r}
-            checked={!!rights[r]}
-            onChange={(v) => setRights({ ...rights, [r]: v })}
-            label={r.replace(/^can_|^is_/, "")}
-          />
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: "0.375rem", flexWrap: "wrap", margin: "0.5rem 0" }}>
-        <button
-          className="btn sm primary"
-          onClick={() => run("promoteChatMember", { chat_id, user_id: Number(uid), ...rights }, "Promoted")}
-        >
-          Promote
-        </button>
-        <button
-          className="btn sm"
-          onClick={() =>
-            run(
-              "promoteChatMember",
-              {
+      {canPromote && (
+        <>
+          <div className="section-title">Promote</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 0.5rem" }}>
+            {grantableRights.map((r) => (
+              <Toggle
+                key={r}
+                checked={!!rights[r]}
+                onChange={(v) => setRights({ ...rights, [r]: v })}
+                label={r.replace(/^can_|^is_/, "")}
+              />
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: "0.375rem", flexWrap: "wrap", margin: "0.5rem 0" }}>
+            <button
+              className="btn sm primary"
+              onClick={() => run("promoteChatMember", {
                 chat_id,
                 user_id: Number(uid),
-                ...Object.fromEntries(ADMIN_RIGHTS.map((r) => [r, false])),
-              },
-              "Demoted"
-            )
-          }
-        >
-          Demote
-        </button>
-      </div>
+                ...Object.fromEntries(grantableRights.map((right) => [right, !!rights[right]])),
+              }, "Promoted")}
+            >
+              Promote
+            </button>
+            <button
+              className="btn sm"
+              onClick={() =>
+                run(
+                  "promoteChatMember",
+                  {
+                    chat_id,
+                    user_id: Number(uid),
+                    ...Object.fromEntries(ADMIN_RIGHTS.map((r) => [r, false])),
+                  },
+                  "Demoted"
+                )
+              }
+            >
+              Demote
+            </button>
+          </div>
 
-      <Field label="Admin custom title">
-        <TextInput value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Moderator" />
-      </Field>
-      <button
-        className="btn sm"
-        onClick={() =>
-          run(
-            "setChatAdministratorCustomTitle",
-            { chat_id, user_id: Number(uid), custom_title: title },
-            "Custom title set"
-          )
-        }
-      >
-        Set title
-      </button>
+          <Field label="Admin custom title">
+            <TextInput value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Moderator" />
+          </Field>
+          <button
+            className="btn sm"
+            onClick={() =>
+              run(
+                "setChatAdministratorCustomTitle",
+                { chat_id, user_id: Number(uid), custom_title: title },
+                "Custom title set"
+              )
+            }
+          >
+            Set title
+          </button>
+        </>
+      )}
     </Collapsible>
   );
 }
@@ -332,7 +380,21 @@ function SenderChatBan({ chat_id, run }: { chat_id: number; run: Run }) {
   );
 }
 
-function ChatSettings({ chat_id, run }: { chat_id: number; run: Run }) {
+function ChatSettings({
+  chat_id,
+  run,
+  canChangeInfo,
+  canRestrict,
+  canPin,
+  canSetStickerSet,
+}: {
+  chat_id: number;
+  run: Run;
+  canChangeInfo: boolean;
+  canRestrict: boolean;
+  canPin: boolean;
+  canSetStickerSet: boolean;
+}) {
   const { upload, notify } = useStore();
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
@@ -347,95 +409,111 @@ function ChatSettings({ chat_id, run }: { chat_id: number; run: Run }) {
 
   return (
     <Collapsible title="Chat settings">
-      <Field label="Title">
-        <TextInput value={title} onChange={(e) => setTitle(e.target.value)} />
-      </Field>
-      <button className="btn sm" onClick={() => run("setChatTitle", { chat_id, title }, "Title set")}>
-        Set title
-      </button>
+      {canChangeInfo && (
+        <>
+          <Field label="Title">
+            <TextInput value={title} onChange={(e) => setTitle(e.target.value)} />
+          </Field>
+          <button className="btn sm" onClick={() => run("setChatTitle", { chat_id, title }, "Title set")}>
+            Set title
+          </button>
 
-      <Field label="Description">
-        <TextArea value={desc} onChange={(e) => setDesc(e.target.value)} rows={2} />
-      </Field>
-      <button
-        className="btn sm"
-        onClick={() => run("setChatDescription", { chat_id, description: desc }, "Description set")}
-      >
-        Set description
-      </button>
+          <Field label="Description">
+            <TextArea value={desc} onChange={(e) => setDesc(e.target.value)} rows={2} />
+          </Field>
+          <button
+            className="btn sm"
+            onClick={() => run("setChatDescription", { chat_id, description: desc }, "Description set")}
+          >
+            Set description
+          </button>
 
-      <Field label="Chat photo">
-        <input
-          type="file"
-          accept="image/*"
-          className="input"
-          onChange={async (e) => {
-            const f = e.target.files?.[0];
-            if (!f) return;
-            const res = await upload("setChatPhoto", { chat_id }, { photo: f });
-            if (res.ok) notify("Chat photo set");
-          }}
-        />
-      </Field>
-      <button className="btn sm" onClick={() => run("deleteChatPhoto", { chat_id }, "Photo deleted")}>
-        Delete photo
-      </button>
+          <Field label="Chat photo">
+            <input
+              type="file"
+              accept="image/*"
+              className="input"
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                const res = await upload("setChatPhoto", { chat_id }, { photo: f });
+                if (res.ok) notify("Chat photo set");
+              }}
+            />
+          </Field>
+          <button className="btn sm" onClick={() => run("deleteChatPhoto", { chat_id }, "Photo deleted")}>
+            Delete photo
+          </button>
+        </>
+      )}
 
-      <div className="section-title" style={{ marginTop: "0.75rem" }}>
-        Default permissions
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 0.5rem" }}>
-        {MEMBER_PERMS.map((p) => (
-          <Toggle
-            key={p}
-            checked={!!perms[p]}
-            onChange={(v) => setPerms({ ...perms, [p]: v })}
-            label={p.replace(/^can_/, "")}
-          />
-        ))}
-      </div>
-      <button
-        className="btn sm"
-        style={{ marginTop: "0.5rem" }}
-        onClick={() =>
-          run(
-            "setChatPermissions",
-            {
-              chat_id,
-              permissions: Object.fromEntries(MEMBER_PERMS.map((p) => [p, !!perms[p]])),
-              use_independent_chat_permissions: true,
-            },
-            "Permissions set"
-          )
-        }
-      >
-        Apply permissions
-      </button>
+      {canRestrict && (
+        <>
+          <div className="section-title" style={{ marginTop: canChangeInfo ? "0.75rem" : 0 }}>
+            Default permissions
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 0.5rem" }}>
+            {MEMBER_PERMS.map((p) => (
+              <Toggle
+                key={p}
+                checked={!!perms[p]}
+                onChange={(v) => setPerms({ ...perms, [p]: v })}
+                label={p.replace(/^can_/, "")}
+              />
+            ))}
+          </div>
+          <button
+            className="btn sm"
+            style={{ marginTop: "0.5rem" }}
+            onClick={() =>
+              run(
+                "setChatPermissions",
+                {
+                  chat_id,
+                  permissions: Object.fromEntries(MEMBER_PERMS.map((p) => [p, !!perms[p]])),
+                  use_independent_chat_permissions: true,
+                },
+                "Permissions set"
+              )
+            }
+          >
+            Apply permissions
+          </button>
+        </>
+      )}
 
-      <Field label="Group sticker set" hint="Supergroups with enough boosts only.">
-        <TextInput value={stickerSet} onChange={(e) => setStickerSet(e.target.value)} />
-      </Field>
-      <div style={{ display: "flex", gap: "0.375rem" }}>
-        <button
-          className="btn sm"
-          onClick={() => run("setChatStickerSet", { chat_id, sticker_set_name: stickerSet }, "Set")}
-        >
-          Set sticker set
-        </button>
-        <button className="btn sm" onClick={() => run("deleteChatStickerSet", { chat_id }, "Removed")}>
-          Remove
-        </button>
-      </div>
+      {canSetStickerSet && (
+        <>
+          <Field label="Group sticker set" hint="Available because Telegram reports can_set_sticker_set.">
+            <TextInput value={stickerSet} onChange={(e) => setStickerSet(e.target.value)} />
+          </Field>
+          <div style={{ display: "flex", gap: "0.375rem" }}>
+            <button
+              className="btn sm"
+              onClick={() => run("setChatStickerSet", { chat_id, sticker_set_name: stickerSet }, "Set")}
+            >
+              Set sticker set
+            </button>
+            <button className="btn sm" onClick={() => run("deleteChatStickerSet", { chat_id }, "Removed")}>
+              Remove
+            </button>
+          </div>
+        </>
+      )}
 
-      <div className="section-title" style={{ marginTop: "0.75rem" }}>
-        Pins
-      </div>
-      <button
-        className="btn sm"
-        onClick={() => run("unpinAllChatMessages", { chat_id }, "All messages unpinned")}
-      >
-        Unpin all messages
-      </button>
+      {canPin && (
+        <>
+          <div className="section-title" style={{ marginTop: "0.75rem" }}>
+            Pins
+          </div>
+          <button
+            className="btn sm"
+            onClick={() => run("unpinAllChatMessages", { chat_id }, "All messages unpinned")}
+          >
+            Unpin all messages
+          </button>
+        </>
+      )}
     </Collapsible>
   );
 }

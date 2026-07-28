@@ -1,12 +1,14 @@
 "use client";
 
-import type { AppSnapshot } from "@/lib/types";
+import type { AppSnapshot } from "../types";
+import { isStickerLibrary, type StickerLibrary } from "../stickers";
 
 export const BROWSER_DB_NAME = "humanoid-browser-state";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const DASHBOARDS = "dashboards";
 const RICH_DRAFTS = "rich-drafts";
 const PREFERENCES = "preferences";
+const STICKER_LIBRARIES = "sticker-libraries";
 
 export interface StoredDashboard {
   version: 1;
@@ -34,6 +36,19 @@ export async function saveDashboard(record: StoredDashboard): Promise<void> {
 
 export async function clearDashboard(botId: string): Promise<void> {
   await deleteRecord(DASHBOARDS, botId);
+}
+
+export async function loadStickerLibrary(botId: string): Promise<StickerLibrary | null> {
+  const value = await getRecord<unknown>(STICKER_LIBRARIES, botId);
+  return isStickerLibrary(value, botId) ? value : null;
+}
+
+export async function saveStickerLibrary(library: StickerLibrary): Promise<void> {
+  await putRecord(STICKER_LIBRARIES, library, library.botId);
+}
+
+export async function clearStickerLibrary(botId: string): Promise<void> {
+  await deleteRecord(STICKER_LIBRARIES, botId);
 }
 
 export async function loadRichDraft<T>(botId: string): Promise<T | null> {
@@ -82,6 +97,9 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!database.objectStoreNames.contains(DASHBOARDS)) database.createObjectStore(DASHBOARDS);
       if (!database.objectStoreNames.contains(RICH_DRAFTS)) database.createObjectStore(RICH_DRAFTS);
       if (!database.objectStoreNames.contains(PREFERENCES)) database.createObjectStore(PREFERENCES);
+      if (!database.objectStoreNames.contains(STICKER_LIBRARIES)) {
+        database.createObjectStore(STICKER_LIBRARIES);
+      }
     };
     request.onerror = () => fail(request.error || new Error("Could not open IndexedDB"));
     request.onblocked = () => fail(new Error("IndexedDB upgrade is blocked by another tab"));

@@ -23,12 +23,23 @@ import { avatar, polling as pollingApi, tg, tgUpload, type CallMeta, type TgResu
 import {
   browserStorageAvailable,
   clearDashboard,
+  clearStickerLibrary,
   loadDashboard,
   loadPreference,
+  loadStickerLibrary,
   saveDashboard,
   savePreference,
+  saveStickerLibrary,
   type StoredDashboard,
 } from "@/lib/client/indexedDb";
+import {
+  emptyStickerLibrary,
+  ingestStickerMessage,
+  ingestStickerSnapshot,
+  mergeStickerSet,
+  stickerSetNeedsHydration,
+  type StickerLibrary,
+} from "@/lib/stickers";
 
 interface State extends AppSnapshot {
   connected: boolean;
@@ -281,6 +292,11 @@ interface Ctx {
   clearBrowserHistory: () => Promise<boolean>;
   avatarFileIds: Record<string, string | null>;
   ensureAvatar: (id: number | string, kind: "user" | "chat") => void;
+  stickerLibrary: StickerLibrary;
+  rememberStickerSet: (set: TgAny) => void;
+  refreshStickerSet: (name: string) => void;
+  /** The bot's fresh getChatMember result for the selected chat; undefined while loading. */
+  botChatMember: TgAny | null | undefined;
 }
 
 const StoreCtx = createContext<Ctx | null>(null);
@@ -325,14 +341,25 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [avatarFileIds, setAvatarFileIds] = useState<Record<string, string | null>>({});
   const [browserStorage, setBrowserStorage] = useState<"loading" | "ready" | "memory-only">("loading");
   const [activeBotId, setActiveBotId] = useState<string | null>(null);
+  const [stickerLibrary, setStickerLibrary] = useState<StickerLibrary>(() => emptyStickerLibrary(""));
+  const [botChatMemberState, setBotChatMemberState] = useState<{
+    chatId: string;
+    member: TgAny | null;
+  } | null>(null);
   const toastId = useRef(0);
   const avatarRequests = useRef(new Set<string>());
   const activeBotIdRef = useRef<string | null>(null);
+  const selectedChatIdRef = useRef<string | null>(null);
   const hydratedRef = useRef(false);
   const pendingEvents = useRef<StreamEvent[]>([]);
   const latestStoredDashboard = useRef<StoredDashboard | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveIdleCallback = useRef<number | null>(null);
+  const stickerLibraryRef = useRef<StickerLibrary>(stickerLibrary);
+  const latestStoredStickerLibrary = useRef<StickerLibrary | null>(null);
+  const stickerSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stickerSaveIdleCallback = useRef<number | null>(null);
+  const stickerSetRequests = useRef(new Set<string>());
   const storageWarningShown = useRef(false);
 
   const cancelPendingSave = useCallback(() => {
@@ -347,6 +374,36 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       saveIdleCallback.current = null;
     }
   }, []);
+
+  const cancelPendingStickerSave = useCallback(() => {
+    if (stickerSaveTimer.current) {
+      clearTimeout(stickerSaveTimer.current);
+      stickerSaveTimer.current = null;
+    }
+    if (stickerSaveIdleCallback.current != null) {
+      if (typeof window.cancelIdleCallback === "function") {
+        window.cancelIdleCallback(stickerSaveIdleCallback.current);
+      }
+      stickerSaveIdleCallback.current = null;
+    }
+  }, []);
+
+  const applyStickerLibrary = useCallback(
+    (update: (current: StickerLibrary) => StickerLibrary): StickerLibrary => {
+      const current = stickerLibraryRef.current;
+      const next = update(current);
+      if (next !== current) {
+        stickerLibraryRef.current = next;
+        setStickerLibrary(next);
+      }
+      return next;
+    },
+    []
+  );
+
+  useEffect(() => {
+    selectedChatIdRef.current = selectedChatId;
+  }, [selectedChatId]);
 
   // ------------------------------------------------------------- toasts
   const notify = useCallback((text: string, kind: "ok" | "err" = "ok") => {
@@ -433,25 +490,77 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const requestStickerSet = useCallback((name: string, force = false, reportFailure = false) => {
+    const botId = activeBotIdRef.current;
+    if (!botId || !name || name.length > 128) return;
+    const current = stickerLibraryRef.current;
+    if (!force && !stickerSetNeedsHydration(current, name)) return;
+    const requestKey = `${botId}:${name}`;
+    if (stickerSetRequests.current.has(requestKey)) return;
+    stickerSetRequests.current.add(requestKey);
+
+    void tg<TgAny>("getStickerSet", { name })
+      .then((response) => {
+        if (response.error_code === 401) setAuthStatus("required");
+        if (activeBotIdRef.current !== botId) return;
+        if (response.ok && response.result) {
+          const set = response.result;
+          applyStickerLibrary((library) => mergeStickerSet(library, set));
+        } else if (reportFailure) {
+          notify(`getStickerSet: ${response.description || "failed"}`, "err");
+        }
+      })
+      .finally(() => stickerSetRequests.current.delete(requestKey));
+  }, [applyStickerLibrary, notify]);
+
+  const refreshStickerSet = useCallback((name: string) => {
+    requestStickerSet(name, true, true);
+  }, [requestStickerSet]);
+
+  const rememberStickerSet = useCallback((set: TgAny) => {
+    applyStickerLibrary((library) => mergeStickerSet(library, set));
+  }, [applyStickerLibrary]);
+
+  const rememberStickerMessage = useCallback((message: StoredMessage) => {
+    if (!message.sticker) return;
+    const setName = typeof message.sticker.set_name === "string" ? message.sticker.set_name : "";
+    const shouldHydrate = Boolean(
+      setName && stickerSetNeedsHydration(stickerLibraryRef.current, setName, message.sticker)
+    );
+    const next = applyStickerLibrary((library) => ingestStickerMessage(library, message));
+    if (setName && (shouldHydrate || stickerSetNeedsHydration(next, setName))) {
+      requestStickerSet(setName, shouldHydrate);
+    }
+  }, [applyStickerLibrary, requestStickerSet]);
+
   const logout = useCallback(async () => {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
       cancelPendingSave();
+      cancelPendingStickerSave();
       const record = latestStoredDashboard.current;
       if (record) void saveDashboard(record).catch(() => undefined);
+      const stickers = latestStoredStickerLibrary.current;
+      if (stickers?.botId) void saveStickerLibrary(stickers).catch(() => undefined);
       latestStoredDashboard.current = null;
+      latestStoredStickerLibrary.current = null;
       hydratedRef.current = false;
       activeBotIdRef.current = null;
       pendingEvents.current = [];
+      stickerSetRequests.current.clear();
       setActiveBotId(null);
       dispatch({ type: "reset" });
       setSelectedChatId(null);
       setAvatarFileIds({});
+      setBotChatMemberState(null);
+      const empty = emptyStickerLibrary("");
+      stickerLibraryRef.current = empty;
+      setStickerLibrary(empty);
       avatarRequests.current.clear();
       setAuthStatus("required");
     }
-  }, [cancelPendingSave]);
+  }, [cancelPendingSave, cancelPendingStickerSave]);
 
   // ------------------------------------------------------------- stream
   useEffect(() => {
@@ -465,17 +574,41 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     activeBotIdRef.current = null;
     pendingEvents.current = [];
     setActiveBotId(null);
+    setBotChatMemberState(null);
     setBrowserStorage(browserStorageAvailable() ? "loading" : "memory-only");
 
     const clearPersistedState = (botId: string) => {
       cancelPendingSave();
+      cancelPendingStickerSave();
       latestStoredDashboard.current = null;
+      latestStoredStickerLibrary.current = null;
       void clearDashboard(botId).catch(warnBrowserStorage);
+      void clearStickerLibrary(botId).catch(warnBrowserStorage);
+      const empty = emptyStickerLibrary(botId);
+      stickerLibraryRef.current = empty;
+      setStickerLibrary(empty);
       setAvatarFileIds({});
+      setBotChatMemberState(null);
       avatarRequests.current.clear();
       setSelectedChatId(null);
       setReplyTo(null);
       setEditing(null);
+    };
+
+    const applyEventSideEffects = (streamEvent: StreamEvent) => {
+      if (streamEvent.type === "message" || streamEvent.type === "message_edited") {
+        rememberStickerMessage(streamEvent.message);
+      }
+      if (streamEvent.type === "raw") {
+        const membership = streamEvent.update.my_chat_member;
+        const chatId = membership?.chat?.id;
+        const member = membership?.new_chat_member;
+        if (chatId != null && String(member?.user?.id ?? "") === activeBotIdRef.current) {
+          if (String(chatId) === selectedChatIdRef.current) {
+            setBotChatMemberState({ chatId: String(chatId), member });
+          }
+        }
+      }
     };
 
     const deliverEvent = (streamEvent: StreamEvent) => {
@@ -487,6 +620,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         pendingEvents.current.push(streamEvent);
         return;
       }
+      applyEventSideEffects(streamEvent);
       dispatch({ type: "event", event: streamEvent });
       if (streamEvent.type === "clear" && activeBotIdRef.current) {
         clearPersistedState(activeBotIdRef.current);
@@ -531,10 +665,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const fresh = (await response.json()) as AppSnapshot;
         const botId = fresh.me?.id == null ? "" : String(fresh.me.id);
         let saved: StoredDashboard | null = null;
+        let savedStickers: StickerLibrary | null = null;
         let storageWorked = browserStorageAvailable();
         if (botId && storageWorked) {
           try {
-            saved = await loadDashboard(botId);
+            [saved, savedStickers] = await Promise.all([
+              loadDashboard(botId),
+              loadStickerLibrary(botId),
+            ]);
           } catch {
             storageWorked = false;
             warnBrowserStorage();
@@ -553,14 +691,24 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         );
         activeBotIdRef.current = botId || null;
         setActiveBotId(botId || null);
+        const restoredStickers = ingestStickerSnapshot(
+          savedStickers || emptyStickerLibrary(botId),
+          saved?.snapshot || fresh
+        );
+        stickerLibraryRef.current = restoredStickers;
+        setStickerLibrary(restoredStickers);
         hydratedRef.current = true;
         if (botId && storageWorked) {
           setBrowserStorage("ready");
         }
 
         for (const queued of pendingEvents.current.splice(0)) {
+          applyEventSideEffects(queued);
           dispatch({ type: "event", event: queued });
           if (queued.type === "clear" && botId) clearPersistedState(botId);
+        }
+        for (const setName of Object.keys(stickerLibraryRef.current.sets)) {
+          requestStickerSet(setName);
         }
       })
       .catch(() => undefined);
@@ -570,7 +718,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (retryTimer) clearTimeout(retryTimer);
       socket?.close(1000, "Page closed");
     };
-  }, [authStatus, cancelPendingSave, warnBrowserStorage]);
+  }, [
+    authStatus,
+    cancelPendingSave,
+    cancelPendingStickerSave,
+    rememberStickerMessage,
+    requestStickerSet,
+    warnBrowserStorage,
+  ]);
 
   // Persist a bounded snapshot off the render path. Repeated live events update
   // the in-memory UI immediately and collapse into at most one IndexedDB write
@@ -612,20 +767,58 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }, 250);
   }, [activeBotId, avatarFileIds, browserStorage, selectedChatId, state, warnBrowserStorage]);
 
+  useEffect(() => {
+    if (
+      !activeBotId
+      || !hydratedRef.current
+      || browserStorage === "memory-only"
+      || stickerLibrary.botId !== activeBotId
+    ) return;
+    latestStoredStickerLibrary.current = {
+      ...stickerLibrary,
+      savedAt: Date.now(),
+    };
+    if (stickerSaveTimer.current || stickerSaveIdleCallback.current != null) return;
+    stickerSaveTimer.current = setTimeout(() => {
+      stickerSaveTimer.current = null;
+      const persistLatest = () => {
+        stickerSaveIdleCallback.current = null;
+        const record = latestStoredStickerLibrary.current;
+        if (!record || record.botId !== activeBotIdRef.current) return;
+        void saveStickerLibrary(record).catch(warnBrowserStorage);
+      };
+      if (typeof window.requestIdleCallback === "function") {
+        stickerSaveIdleCallback.current = window.requestIdleCallback(persistLatest, { timeout: 750 });
+      } else {
+        persistLatest();
+      }
+    }, 250);
+  }, [activeBotId, browserStorage, stickerLibrary, warnBrowserStorage]);
+
   useEffect(() => () => {
     cancelPendingSave();
     const record = latestStoredDashboard.current;
     if (record && record.botId === activeBotIdRef.current) void saveDashboard(record).catch(() => undefined);
   }, [cancelPendingSave]);
 
+  useEffect(() => () => {
+    cancelPendingStickerSave();
+    const record = latestStoredStickerLibrary.current;
+    if (record && record.botId === activeBotIdRef.current) {
+      void saveStickerLibrary(record).catch(() => undefined);
+    }
+  }, [cancelPendingStickerSave]);
+
   const clearBrowserHistory = useCallback(async () => {
     const botId = activeBotIdRef.current;
     let storageCleared = true;
     cancelPendingSave();
+    cancelPendingStickerSave();
     latestStoredDashboard.current = null;
+    latestStoredStickerLibrary.current = null;
     if (botId && browserStorageAvailable()) {
       try {
-        await clearDashboard(botId);
+        await Promise.all([clearDashboard(botId), clearStickerLibrary(botId)]);
       } catch {
         storageCleared = false;
         warnBrowserStorage();
@@ -633,6 +826,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
     dispatch({ type: "event", event: { type: "clear" } });
     setAvatarFileIds({});
+    const empty = emptyStickerLibrary(botId || "");
+    stickerLibraryRef.current = empty;
+    setStickerLibrary(empty);
+    setBotChatMemberState(null);
     avatarRequests.current.clear();
     setSelectedChatId(null);
     setReplyTo(null);
@@ -641,7 +838,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     const result = await pollingApi("clear").catch(() => ({ ok: false, description: "Could not notify other open tabs" }));
     if (!result.ok) notify(result.description || "Browser history cleared, but other tabs were not notified", "err");
     return storageCleared;
-  }, [cancelPendingSave, notify, warnBrowserStorage]);
+  }, [cancelPendingSave, cancelPendingStickerSave, notify, warnBrowserStorage]);
 
   const call = useCallback(
     async <T,>(method: string, params: TgAny = {}, meta?: CallMeta) => {
@@ -667,6 +864,32 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     },
     [notify]
   );
+
+  const selectedChatType = selectedChatId
+    ? state.chats.find((entry) => String(entry.chat.id) === selectedChatId)?.chat.type
+    : undefined;
+
+  useEffect(() => {
+    const chatId = selectedChatId;
+    const botId = state.me?.id;
+    setBotChatMemberState(null);
+    if (!chatId || !botId || selectedChatType === "private") {
+      if (chatId && selectedChatType === "private") {
+        setBotChatMemberState({ chatId, member: null });
+      }
+      return;
+    }
+
+    let cancelled = false;
+    void tg<TgAny>("getChatMember", { chat_id: Number(chatId), user_id: botId }).then((response) => {
+      if (cancelled) return;
+      if (response.error_code === 401) setAuthStatus("required");
+      setBotChatMemberState({ chatId, member: response.ok && response.result ? response.result : null });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedChatId, selectedChatType, state.me?.id]);
 
   const ensureAvatar = useCallback((id: number | string, kind: "user" | "chat") => {
     const key = `${kind}:${id}`;
@@ -704,6 +927,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     [state.messages, selectedChatId]
   );
 
+  const botChatMember = selectedChatId && botChatMemberState?.chatId === selectedChatId
+    ? botChatMemberState.member
+    : undefined;
+
   const value: Ctx = {
     state,
     selectedChatId,
@@ -729,6 +956,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     clearBrowserHistory,
     avatarFileIds,
     ensureAvatar,
+    stickerLibrary,
+    rememberStickerSet,
+    refreshStickerSet,
+    botChatMember,
   };
 
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>;

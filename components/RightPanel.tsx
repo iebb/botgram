@@ -9,17 +9,29 @@ import UpdatesPanel from "./panels/UpdatesPanel";
 import WebhookPanel from "./panels/WebhookPanel";
 import StickersPanel from "./panels/StickersPanel";
 import ConsolePanel from "./panels/ConsolePanel";
-import { IconClose } from "./Icons";
+import {
+  IconBolt,
+  IconBot,
+  IconClose,
+  IconInfo,
+  IconRefresh,
+  IconShield,
+  IconSticker,
+  IconTerminal,
+  IconWebhook,
+} from "./Icons";
+import { useStore } from "./Store";
+import { isBotAdministrator } from "@/lib/chatPermissions";
 
 const TABS = [
-  { id: "info", label: "Info" },
-  { id: "send", label: "Tools" },
-  { id: "admin", label: "Admin" },
-  { id: "bot", label: "Bot" },
-  { id: "updates", label: "Updates" },
-  { id: "stickers", label: "Stickers" },
-  { id: "webhook", label: "Webhook" },
-  { id: "console", label: "Console" },
+  { id: "info", label: "Info", Icon: IconInfo },
+  { id: "send", label: "Tools", Icon: IconBolt },
+  { id: "admin", label: "Admin", Icon: IconShield },
+  { id: "bot", label: "Bot", Icon: IconBot },
+  { id: "updates", label: "Updates", Icon: IconRefresh },
+  { id: "stickers", label: "Stickers", Icon: IconSticker },
+  { id: "webhook", label: "Webhook", Icon: IconWebhook },
+  { id: "console", label: "Console", Icon: IconTerminal },
 ];
 
 export default function RightPanel({
@@ -31,6 +43,14 @@ export default function RightPanel({
   setTab: (t: string) => void;
   onClose: () => void;
 }) {
+  const { botChatMember } = useStore();
+  const canAdminister = isBotAdministrator(botChatMember);
+  const tabs = TABS.filter((item) => item.id !== "admin" || canAdminister);
+
+  React.useEffect(() => {
+    if (tab === "admin" && !canAdminister) setTab("info");
+  }, [canAdminister, setTab, tab]);
+
   return (
     <aside className="right-panel">
       <div className="topbar" style={{ paddingLeft: "1rem" }}>
@@ -41,20 +61,23 @@ export default function RightPanel({
       </div>
 
       <div className="panel-tabs">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.id}
             className={`panel-tab${tab === t.id ? " active" : ""}`}
             onClick={() => setTab(t.id)}
+            title={t.label}
+            aria-label={t.label}
           >
-            {t.label}
+            <t.Icon size={17} />
+            <span>{t.label}</span>
           </button>
         ))}
       </div>
 
       {tab === "info" && <InfoPanel />}
       {tab === "send" && <ActionsPanel />}
-      {tab === "admin" && <AdminPanel />}
+      {tab === "admin" && canAdminister && <AdminPanel />}
       {tab === "bot" && <BotPanel />}
       {tab === "updates" && <UpdatesPanel />}
       {tab === "stickers" && <StickersPanel />}

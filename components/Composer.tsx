@@ -7,6 +7,7 @@ import KeyboardBuilder, { buildReplyMarkup, emptyKb, type KbDraft } from "./Keyb
 import AttachModal, { type AttachKind } from "./SendMedia";
 import { messagePreview } from "@/lib/format";
 import type { TgAny } from "@/lib/types";
+import StickerSelector from "./StickerSelector";
 import {
   IconAttach,
   IconBolt,
@@ -92,6 +93,7 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
   const [attach, setAttach] = useState<AttachKind | null>(null);
   const [showAttach, setShowAttach] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
+  const [showStickers, setShowStickers] = useState(false);
   const [showKb, setShowKb] = useState(false);
   const [showOpts, setShowOpts] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -117,6 +119,7 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
   const ta = useRef<HTMLTextAreaElement>(null);
   const attachRef = useOutsideClick<HTMLDivElement>(() => setShowAttach(false));
   const emojiRef = useOutsideClick<HTMLDivElement>(() => setShowEmoji(false));
+  const stickerRef = useOutsideClick<HTMLDivElement>(() => setShowStickers(false));
   const optsRef = useOutsideClick<HTMLDivElement>(() => setShowOpts(false));
 
   // Load an existing message into the box when the user hits "edit".
@@ -222,6 +225,23 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
         setText("");
         setReplyTo(null);
         setOpts((o) => ({ ...o, quote: "" }));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendPickedSticker = async (sticker: TgAny) => {
+    if (!sticker.file_id || editing) return;
+    setBusy(true);
+    try {
+      const res = await call("sendSticker", {
+        ...baseParams(),
+        sticker: sticker.file_id,
+      });
+      if (res.ok) {
+        setReplyTo(null);
+        setOpts((current) => ({ ...current, quote: "" }));
       }
     } finally {
       setBusy(false);
@@ -382,7 +402,10 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
             <div style={{ position: "relative" }}>
               <button
                 className="icon-btn"
-                onClick={() => setShowEmoji((v) => !v)}
+                onClick={() => {
+                  setShowStickers(false);
+                  setShowEmoji((v) => !v);
+                }}
                 aria-label="Emoji"
               >
                 <IconSmile />
@@ -413,6 +436,28 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
                     </button>
                   ))}
                 </div>
+              )}
+            </div>
+
+            <div ref={stickerRef} style={{ position: "relative" }}>
+              <button
+                className={`icon-btn${showStickers ? " active" : ""}`}
+                onClick={() => {
+                  setShowEmoji(false);
+                  setShowStickers((visible) => !visible);
+                }}
+                aria-label="Stickers"
+                title={editing ? "Finish editing before sending a sticker" : "Stickers"}
+                disabled={Boolean(editing)}
+              >
+                <IconSticker />
+              </button>
+              {showStickers && (
+                <StickerSelector
+                  busy={busy}
+                  onClose={() => setShowStickers(false)}
+                  onSelect={sendPickedSticker}
+                />
               )}
             </div>
 

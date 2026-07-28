@@ -13,6 +13,9 @@ does not use Durable Object storage.
 - React applies live events immediately. It coalesces per-bot chats, messages,
   queries, raw updates, redacted logs, selected chat, and resolved avatar file IDs
   into browser IndexedDB after the render path, so they survive local reloads.
+- Sticker messages also populate a per-bot IndexedDB metadata library. A received
+  `set_name` is hydrated with `getStickerSet`; only IDs, set metadata, a bounded
+  deduplication ledger, and local use counts persist. Sticker bytes remain `no-store`.
 - Rich Studio configuration autosaves per bot and theme choice is browser-local.
   Upload file bytes remain session-only; import and export are explicit file
   actions.
@@ -55,13 +58,20 @@ webhook** after experimenting with a different webhook or `getUpdates` client.
 ## UI behavior
 
 - **Clear browser history** removes the current bot's saved dashboard snapshot and
-  broadcasts a clear event to other open dashboards. It does not affect Telegram
-  messages, the Rich Studio draft, or the theme.
+  discovered sticker library, then broadcasts a clear event to other open
+  dashboards. It does not affect Telegram messages, the Rich Studio draft, or the
+  theme.
 - Rich Message Studio opens a Notion-style block canvas with drag handles, `/`
   commands, and block context actions. Advanced source/native views remain present.
 - User profile photos use `getUserProfilePhotos`; group/channel photos use
   `getChat`. Telegram file IDs persist in IndexedDB; proxied image bytes use
   `no-store`.
+- The composer sticker selector ranks discovered sets and stickers by local use.
+  `.TGS` uses a lazily imported Lottie canvas renderer and `.WEBM` uses looping
+  muted video; offscreen stickers do not start animation work.
+- Selecting a non-private chat fetches the bot's own `getChatMember` record.
+  Admin navigation is absent for non-admins, and rights-specific controls are
+  omitted when their matching administrator permission is false.
 - The Console accepts every current or future Bot API method. Sensitive managed-bot
   results are omitted from the transient activity stream.
 
@@ -70,8 +80,9 @@ webhook** after experimenting with a different webhook or `getUpdates` client.
 Worker tests cover authentication, webhook rejection, transient WebSocket delivery,
 deduplication within a live object instance, guest/ephemeral routing, session-only
 server logs, and empty server snapshots. Browser tests cover per-bot IndexedDB
-round-tripping and the separation of dashboard history from preferences and rich
-drafts. The live verifier checks login, empty server state, the real bot,
+round-tripping, sticker-library persistence/deduplication/frequency sorting, admin
+permission visibility, and the separation of dashboard history from preferences
+and rich drafts. The live verifier checks login, empty server state, the real bot,
 authenticated WebSocket readiness, avatar resolution, and webhook installation
 without contacting a user. A real Telegram interaction is still required to prove
 end-to-end user-to-bot delivery and browser restoration.

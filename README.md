@@ -18,6 +18,9 @@ Humanoid does not turn a bot into a user account:
 - The Bot API does not expose arbitrary existing chat history. Only updates that
   arrive while this dashboard is open, plus Message results from calls made in
   that browser, can enter its locally retained timeline.
+- The Bot API does not expose a bot/user-style list of installed sticker sets.
+  Humanoid discovers sets from sticker messages this browser receives or sends,
+  then uses `getStickerSet` to add every sticker currently in each discovered set.
 - Permissions, edit/delete windows, privacy mode, payments, business features,
   Stars, and Telegram rate limits still apply.
 
@@ -39,15 +42,16 @@ Bot API  <- authenticated, storage-free Worker proxy <- current browser
 read or write Durable Object storage. The browser immediately renders live events,
 then coalesces snapshots into IndexedDB. Per-bot chats, messages, incoming update
 payloads, queries, redacted API activity, resolved avatar file IDs, the selected
-chat, and Rich Studio drafts survive reloads on that browser. Theme choice is also
-local. The bot token and uploaded file bytes are never written to IndexedDB.
+chat, discovered sticker-set metadata, local sticker-use frequency, and Rich Studio
+drafts survive reloads on that browser. Theme choice is also local. The bot token,
+sticker files, and uploaded file bytes are never written to IndexedDB.
 
 The retained event collections are bounded to 500 messages per chat, 300 raw
 updates, 300 API entries, and 200 queries. Browser storage remains device-local and
 may be deleted by the operator, browser cleanup, private-browsing rules, or quota
 eviction. **Clear browser history** removes the current bot's saved dashboard
-history; it does not delete Telegram messages or the separately saved Rich Studio
-draft and theme.
+history and discovered sticker library; it does not delete Telegram messages or
+the separately saved Rich Studio draft and theme.
 
 Cloudflare Worker logs and traces are disabled. Telegram files are returned with
 `Cache-Control: private, no-store`; only their reusable Telegram file IDs are
@@ -69,6 +73,11 @@ most 24 hours), not legacy chats or arbitrary message history.
 
 - Text, rich content, media, albums, polls, locations, payments, stickers,
   interactive keyboards, replies, edits, deletions, reactions, and administration.
+- Static, animated `.TGS`, and video `.WEBM` stickers render in messages and in a
+  dedicated composer selector. The selector contains every set discovered from
+  locally retained sticker messages, hydrates complete sets through the Bot API,
+  and sorts both sets and stickers by browser-local use frequency. Animation code
+  and sticker files load only when visible.
 - A dedicated Rich Message Studio with a Notion-style WYSIWYG canvas: draggable
   blocks, slash commands, per-block context menus, duplicate/delete/move/transform
   actions, rich paste sanitization, inline formatting, HTML source, Rich Markdown,
@@ -80,6 +89,9 @@ most 24 hours), not legacy chats or arbitrary message history.
   the current browser; avatar bytes are not cached by Humanoid.
 - Live raw updates, answerable callback/inline/payment/join queries, and a redacted
   API activity view, persisted locally with bounded history.
+- Admin tabs and actions are omitted unless a fresh `getChatMember` result says the
+  bot is an administrator; individual controls are further filtered by rights such
+  as `can_restrict_members`, `can_promote_members`, and `can_pin_messages`.
 
 ## Security
 
