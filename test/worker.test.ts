@@ -273,4 +273,29 @@ describe("Humanoid Worker", () => {
     });
     socket.close(1000, "test complete");
   });
+
+  it("mirrors a successful bot reaction because Telegram suppresses its update", async () => {
+    const socket = await openSocket();
+    const framePromise = nextFrame(socket);
+    await (await hub()).absorbTelegramResultJson(
+      "setMessageReaction",
+      JSON.stringify({
+        chat_id: CHAT.id,
+        message_id: 42,
+        reaction: [{ type: "custom_emoji", custom_emoji_id: "5368324170671202286" }],
+      }),
+      "true",
+      JSON.stringify({ reactionLocalId: "reaction-local-42" })
+    );
+
+    await expect(framePromise).resolves.toMatchObject({
+      type: "reaction",
+      chatId: String(CHAT.id),
+      messageId: 42,
+      own: true,
+      observationId: "reaction-local-42",
+      reactions: [{ type: "custom_emoji", custom_emoji_id: "5368324170671202286" }],
+    });
+    socket.close(1000, "test complete");
+  });
 });

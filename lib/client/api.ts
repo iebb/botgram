@@ -15,6 +15,8 @@ export interface CallMeta {
   queryLocalId?: string;
   deleteChatId?: string | number;
   deleteMessageIds?: number[];
+  /** Correlates the browser's optimistic reaction with the Worker's synthetic event. */
+  reactionLocalId?: string;
 }
 
 /** Call any Bot API method through the transient Worker proxy. */

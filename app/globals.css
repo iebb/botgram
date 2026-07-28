@@ -980,6 +980,41 @@ a.tg-link:hover {
   font-size: 0.9375rem;
   line-height: 1.35;
 }
+.composer-thinking-toggle {
+  min-height: 1.55rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.18rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--input-border));
+  border-radius: 999px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.67rem;
+  font-weight: 650;
+}
+.composer-thinking-toggle:hover,
+.composer-thinking-toggle.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+}
+.composer-thinking-toggle.disabled {
+  border-color: var(--input-border);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+.composer-thinking-toggle input {
+  width: 0.85rem;
+  height: 0.85rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.composer-thinking-status {
+  padding-left: 0.3rem;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  font-variant-numeric: tabular-nums;
+}
 .send-btn {
   width: 3.375rem;
   height: 3.375rem;
@@ -1223,6 +1258,67 @@ a.tg-link:hover {
   height: 1.75rem;
   flex: 0 0 auto;
   font-size: 1.35rem;
+}
+
+.reaction-picker-tabs {
+  display: flex;
+  gap: 0.2rem;
+  margin: -0.15rem 0 0.65rem;
+  padding: 0.2rem;
+  border-radius: 0.65rem;
+  background: var(--bg-secondary);
+}
+.reaction-picker-tabs button {
+  flex: 1;
+  padding: 0.45rem 0.65rem;
+  border-radius: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+.reaction-picker-tabs button.active {
+  color: var(--text);
+  background: var(--panel-bg);
+  box-shadow: 0 0.12rem 0.45rem rgba(0, 0, 0, 0.14);
+}
+.reaction-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(2.5rem, 1fr));
+  gap: 0.2rem;
+  max-height: 15rem;
+  margin-bottom: 0.75rem;
+  overflow-y: auto;
+}
+.reaction-emoji-grid button {
+  padding: 0.32rem;
+  border-radius: 0.5rem;
+  font-size: 1.35rem;
+}
+.reaction-emoji-grid button:hover,
+.reaction-emoji-grid button.selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.custom-reaction-selector {
+  height: min(23rem, 48dvh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  margin-bottom: 0.7rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.75rem;
+  background: var(--bg-secondary);
+}
+.custom-reaction-selector > .sticker-search {
+  margin: 0.5rem;
+  flex: 0 0 auto;
+  background: var(--panel-bg);
+}
+.custom-reaction-selector .sticker-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.custom-reaction-selector .sticker-choice.selected {
+  background: color-mix(in srgb, var(--accent) 23%, transparent);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .sticker-selector {
@@ -1557,6 +1653,14 @@ a.tg-link:hover {
 .ctx-item:hover {
   background: var(--hover);
 }
+.ctx-item:disabled {
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+.ctx-item:disabled:hover {
+  background: transparent;
+}
 .ctx-item.danger {
   color: var(--danger);
 }
@@ -1753,6 +1857,31 @@ a.tg-link:hover {
   margin: 0.5rem 0 0;
   font-size: 0.69rem;
   line-height: 1.45;
+}
+.rich-thinking-card {
+  background: color-mix(in srgb, var(--accent) 5%, var(--panel-bg));
+}
+.rich-thinking-preview {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  font-size: 0.72rem;
+  font-style: italic;
+  opacity: 0.72;
+}
+.rich-thinking-preview span {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #69c779;
+  box-shadow: 0 0 0 0.2rem color-mix(in srgb, #69c779 20%, transparent);
+  animation: thinking-pulse 1.4s ease-in-out infinite;
+}
+@keyframes thinking-pulse {
+  50% { opacity: 0.42; transform: scale(0.82); }
 }
 .rich-target-card {
   display: flex;

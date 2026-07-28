@@ -67,51 +67,100 @@ export function ingestStickerMessage(
   now = message.date ? message.date * 1000 : Date.now()
 ): StickerLibrary {
   const sticker = message.sticker as TgAny | undefined;
-  const key = sticker ? stickerKey(sticker) : "";
-  if (!sticker || !key) return library;
+  if (!sticker) return library;
+  return ingestStickerUse(library, sticker, stickerMessageKey(message), now);
+}
 
-  const seenKey = stickerMessageKey(message);
-  const seenIndex = seenMessageIndex(library);
-  if (seenIndex.has(seenKey)) return library;
-
-  const seenMessageKeys = [...library.seenMessageKeys, seenKey].slice(-MAX_SEEN_STICKER_MESSAGES);
+/** Adds sticker metadata without changing browser-local frequency. */
+export function mergeStickerMetadata(
+  library: StickerLibrary,
+  sticker: TgAny,
+  now = Date.now()
+): StickerLibrary {
+  const key = stickerKey(sticker);
+  if (!key) return library;
   const setName = typeof sticker.set_name === "string" && sticker.set_name ? sticker.set_name : "";
   if (!setName) {
     const existing = library.loose[key];
-    const next = {
+    return {
       ...library,
-      savedAt: Date.now(),
+      savedAt: now,
       loose: {
         ...library.loose,
-        [key]: mergeObservedSticker(existing, sticker, now),
+        [key]: mergeStickerEntry(existing, sticker, now),
       },
-      seenMessageKeys,
     };
-    advanceSeenMessageIndex(seenIndex, library.seenMessageKeys, seenMessageKeys, seenKey, next);
-    return next;
   }
 
   const existingSet = library.sets[setName] || emptySet(setName);
   const existingSticker = existingSet.stickers[key];
-  const next = {
+  return {
     ...library,
-    savedAt: Date.now(),
+    savedAt: now,
     sets: {
       ...library.sets,
       [setName]: {
         ...existingSet,
+        stickerType: typeof sticker.type === "string" && sticker.type
+          ? sticker.type
+          : existingSet.stickerType,
         stickers: {
           ...existingSet.stickers,
-          [key]: mergeObservedSticker(existingSticker, sticker, now),
+          [key]: mergeStickerEntry(existingSticker, sticker, now),
         },
         order: existingSet.order.includes(key) ? existingSet.order : [...existingSet.order, key],
-        useCount: existingSet.useCount + 1,
-        lastUsedAt: Math.max(existingSet.lastUsedAt, now),
       },
     },
-    seenMessageKeys,
   };
-  advanceSeenMessageIndex(seenIndex, library.seenMessageKeys, seenMessageKeys, seenKey, next);
+}
+
+/** Records one observed use exactly once and keeps a bounded dedupe ledger. */
+export function ingestStickerUse(
+  library: StickerLibrary,
+  sticker: TgAny,
+  observationKey: string,
+  now = Date.now()
+): StickerLibrary {
+  const key = stickerKey(sticker);
+  if (!key || !observationKey) return library;
+  const seenIndex = seenMessageIndex(library);
+  if (seenIndex.has(observationKey)) return library;
+
+  const withMetadata = mergeStickerMetadata(library, sticker, now);
+  const seenMessageKeys = [...library.seenMessageKeys, observationKey].slice(-MAX_SEEN_STICKER_MESSAGES);
+  const setName = typeof sticker.set_name === "string" && sticker.set_name ? sticker.set_name : "";
+  let next: StickerLibrary;
+  if (!setName) {
+    next = {
+      ...withMetadata,
+      savedAt: now,
+      loose: {
+        ...withMetadata.loose,
+        [key]: incrementStickerEntry(withMetadata.loose[key], now),
+      },
+      seenMessageKeys,
+    };
+  } else {
+    const existingSet = withMetadata.sets[setName];
+    next = {
+      ...withMetadata,
+      savedAt: now,
+      sets: {
+        ...withMetadata.sets,
+        [setName]: {
+          ...existingSet,
+          stickers: {
+            ...existingSet.stickers,
+            [key]: incrementStickerEntry(existingSet.stickers[key], now),
+          },
+          useCount: existingSet.useCount + 1,
+          lastUsedAt: Math.max(existingSet.lastUsedAt, now),
+        },
+      },
+      seenMessageKeys,
+    };
+  }
+  advanceSeenMessageIndex(seenIndex, library.seenMessageKeys, seenMessageKeys, observationKey, next);
   return next;
 }
 
@@ -248,16 +297,24 @@ function emptySet(name: string): StickerLibrarySet {
   };
 }
 
-function mergeObservedSticker(
+function mergeStickerEntry(
   existing: StickerLibraryEntry | undefined,
   sticker: TgAny,
   now: number
 ): StickerLibraryEntry {
   return {
     sticker: existing ? { ...existing.sticker, ...sticker } : { ...sticker },
-    useCount: (existing?.useCount || 0) + 1,
+    useCount: existing?.useCount || 0,
     firstSeenAt: existing?.firstSeenAt || now,
-    lastUsedAt: Math.max(existing?.lastUsedAt || 0, now),
+    lastUsedAt: existing?.lastUsedAt || 0,
+  };
+}
+
+function incrementStickerEntry(existing: StickerLibraryEntry, now: number): StickerLibraryEntry {
+  return {
+    ...existing,
+    useCount: existing.useCount + 1,
+    lastUsedAt: Math.max(existing.lastUsedAt, now),
   };
 }
 

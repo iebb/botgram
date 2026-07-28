@@ -55,6 +55,8 @@ export interface StoredMessage extends TgMessage {
   _deleted?: boolean;
   /** local: reaction totals observed through individual and aggregate reaction updates */
   _reactions?: TgAny[];
+  /** local: the bot's last reaction selection, used to apply its optimistic count delta once */
+  _botReactions?: TgAny[];
   /** local: monotonically increasing ingest sequence, for stable sorting */
   _seq: number;
 }
@@ -140,6 +142,10 @@ export type StreamEvent =
       reactions: TgAny[];
       oldReactions?: TgAny[];
       replace?: boolean;
+      /** local: this change represents the bot's own setMessageReaction call */
+      own?: boolean;
+      /** stable browser/update identity used for frequency accounting */
+      observationId?: string;
     }
   | { type: "poll_update"; poll: TgAny }
   | { type: "chat"; chat: ChatEntry }

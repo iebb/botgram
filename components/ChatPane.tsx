@@ -34,11 +34,8 @@ import {
   IconUsers,
 } from "./Icons";
 import CustomEmoji from "./CustomEmoji";
-
-const REACTIONS = [
-  "👍","👎","❤️","🔥","🥰","👏","😁","🤔","🤯","😱","🤬","😢","🎉","🤩","🤮","💩",
-  "🙏","👌","🕊","🤡","🥱","🥴","😍","🐳","❤️‍🔥","🌚","🌭","💯","🤣","⚡️","🍌","🏆",
-];
+import CustomReactionSelector from "./CustomReactionSelector";
+import { reactionType, STANDARD_REACTION_EMOJI } from "@/lib/reactions";
 
 export default function ChatPane({
   onOpenPanel,
@@ -456,14 +453,22 @@ function ForwardModal({
 /* ------------------------------------------------------------ reaction */
 
 function ReactionModal({ message, onClose }: { message: StoredMessage; onClose: () => void }) {
-  const { call, notify, selectedChatId } = useStore();
-  const [picked, setPicked] = useState<string[]>([]);
+  const { call, chat, notify, selectedChatId, setLocalBotReaction } = useStore();
+  const initial = reactionType(message._botReactions?.[0]);
+  const [tab, setTab] = useState<"emoji" | "custom">(initial?.type === "custom_emoji" ? "custom" : "emoji");
+  const [picked, setPicked] = useState<string[]>(initial?.type === "emoji" ? [String(initial.emoji || "")] : []);
   const [big, setBig] = useState(false);
-  const [customId, setCustomId] = useState("");
-  const [previewCustomId, setPreviewCustomId] = useState("");
+  const [customId, setCustomId] = useState(initial?.type === "custom_emoji" ? String(initial.custom_emoji_id || "") : "");
+  const advertised = Array.isArray(chat?.chat.available_reactions) ? chat.chat.available_reactions : null;
+  const reactionChoices = advertised
+    ? advertised
+        .map((value: unknown) => reactionType(value))
+        .filter((value): value is TgAny => value?.type === "emoji" && typeof value.emoji === "string")
+        .map((value) => value.emoji as string)
+    : [...STANDARD_REACTION_EMOJI];
 
   const apply = async () => {
-    const normalizedCustomId = customId.trim();
+    const normalizedCustomId = tab === "custom" ? customId.trim() : "";
     if (normalizedCustomId && !/^\d+$/.test(normalizedCustomId)) {
       notify("Enter a numeric Telegram custom emoji id", "err");
       return;
@@ -481,13 +486,19 @@ function ReactionModal({ message, onClose }: { message: StoredMessage; onClose: 
     const reaction = normalizedCustomId
       ? [{ type: "custom_emoji", custom_emoji_id: normalizedCustomId }]
       : picked.map((emoji) => ({ type: "emoji", emoji }));
-    const res = await call("setMessageReaction", {
-      chat_id: Number(selectedChatId),
-      message_id: message.message_id,
-      reaction,
-      is_big: big || undefined,
-    });
+    const observationId = `reaction:${crypto.randomUUID()}`;
+    const res = await call(
+      "setMessageReaction",
+      {
+        chat_id: Number(selectedChatId),
+        message_id: message.message_id,
+        reaction,
+        is_big: big || undefined,
+      },
+      { reactionLocalId: observationId }
+    );
     if (res.ok) {
+      setLocalBotReaction(String(selectedChatId), message.message_id, reaction, observationId);
       notify(reaction.length ? "Reaction set" : "Reaction removed");
       onClose();
     }
@@ -499,7 +510,10 @@ function ReactionModal({ message, onClose }: { message: StoredMessage; onClose: 
       onClose={onClose}
       footer={
         <>
-          <button className="btn ghost" onClick={() => setPicked([])}>
+          <button className="btn ghost" onClick={() => {
+            setPicked([]);
+            setCustomId("");
+          }}>
             Clear
           </button>
           <button className="btn primary" onClick={apply}>
@@ -508,52 +522,57 @@ function ReactionModal({ message, onClose }: { message: StoredMessage; onClose: 
         </>
       }
     >
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(2.5rem, 1fr))",
-          gap: "0.25rem",
-          marginBottom: "0.75rem",
-        }}
-      >
-        {REACTIONS.map((r) => (
-          <button
-            key={r}
-            onClick={() => setPicked((p) => (p[0] === r ? [] : [r]))}
-            style={{
-              fontSize: "1.375rem",
-              padding: "0.25rem",
-              borderRadius: "0.5rem",
-              background: picked.includes(r) ? "var(--accent)" : "transparent",
-            }}
-          >
-            {r}
-          </button>
-        ))}
+      <div className="reaction-picker-tabs" role="tablist" aria-label="Reaction kind">
+        <button type="button" className={tab === "emoji" ? "active" : ""} onClick={() => setTab("emoji")} role="tab" aria-selected={tab === "emoji"}>Emoji</button>
+        <button type="button" className={tab === "custom" ? "active" : ""} onClick={() => setTab("custom")} role="tab" aria-selected={tab === "custom"}>Custom emoji</button>
       </div>
-      <Field label="Custom emoji id (premium)" hint="Overrides the picks above when set.">
-        <TextInput
-          value={customId}
-          onChange={(e) => {
-            setCustomId(e.target.value);
-            if (!/^\d+$/.test(e.target.value.trim())) setPreviewCustomId("");
-          }}
-          onBlur={() => {
-            const value = customId.trim();
-            setPreviewCustomId(/^\d+$/.test(value) ? value : "");
-          }}
-        />
-      </Field>
-      {previewCustomId && (
-        <div className="custom-reaction-preview">
-          <CustomEmoji id={previewCustomId} fallback="🙂" />
-          <span>Telegram custom emoji preview</span>
+
+      {tab === "emoji" ? (
+        <div className="reaction-emoji-grid">
+          {reactionChoices.map((emoji) => (
+            <button
+              type="button"
+              key={emoji}
+              className={picked.includes(emoji) && !customId ? "selected" : ""}
+              aria-pressed={picked.includes(emoji) && !customId}
+              onClick={() => {
+                setCustomId("");
+                setPicked((current) => current[0] === emoji ? [] : [emoji]);
+              }}
+            >
+              {emoji}
+            </button>
+          ))}
+          {!reactionChoices.length && <span className="muted">This chat currently advertises no standard reactions.</span>}
         </div>
+      ) : (
+        <>
+          <CustomReactionSelector
+            selectedId={customId}
+            onSelect={(sticker) => {
+              setPicked([]);
+              setCustomId(String(sticker.custom_emoji_id || ""));
+            }}
+          />
+          <Field label="Custom emoji id" hint="You can also paste a numeric Telegram custom emoji id.">
+            <TextInput value={customId} onChange={(event) => {
+              setPicked([]);
+              setCustomId(event.target.value.trim());
+            }} />
+          </Field>
+          {/^\d+$/.test(customId) && (
+            <div className="custom-reaction-preview">
+              <CustomEmoji id={customId} fallback="🙂" />
+              <span>Selected Telegram custom emoji</span>
+            </div>
+          )}
+        </>
       )}
       <Toggle checked={big} onChange={setBig} label="Big animation (is_big)" />
       <p className="muted" style={{ fontSize: "0.75rem" }}>
         A bot may set exactly one reaction per message. A custom reaction must already be present
         on the message or be allowed by the chat administrators. Applying an empty selection removes it.
+        Telegram does not send reaction updates for reactions set by bots, so Humanoid mirrors a successful change into this browser immediately.
       </p>
     </Modal>
   );

@@ -5,6 +5,8 @@ import {
   entriesForStickerSet,
   ingestStickerMessage,
   ingestStickerSnapshot,
+  ingestStickerUse,
+  mergeStickerMetadata,
   mergeStickerSet,
   sortedStickerEntries,
   sortedStickerSets,
@@ -99,5 +101,25 @@ describe("browser-local sticker library", () => {
       "wave-unique",
       "other-unique",
     ]);
+  });
+
+  it("builds a frequency-ranked custom emoji set without double-counting an observation", () => {
+    const custom = {
+      file_id: "custom-file",
+      file_unique_id: "custom-unique",
+      custom_emoji_id: "5368324170671202286",
+      set_name: "ReactionSet",
+      type: "custom_emoji",
+      emoji: "👍",
+      is_animated: true,
+    };
+    const metadata = mergeStickerMetadata(emptyStickerLibrary("42", 1), custom, 10);
+    expect(metadata.sets.ReactionSet).toMatchObject({ stickerType: "custom_emoji", useCount: 0 });
+
+    const observed = ingestStickerUse(metadata, custom, "reaction:update:77:custom:5368324170671202286", 20);
+    const duplicate = ingestStickerUse(observed, custom, "reaction:update:77:custom:5368324170671202286", 30);
+    expect(duplicate).toBe(observed);
+    expect(observed.sets.ReactionSet.useCount).toBe(1);
+    expect(observed.sets.ReactionSet.stickers["custom-unique"].useCount).toBe(1);
   });
 });

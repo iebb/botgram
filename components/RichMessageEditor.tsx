@@ -61,7 +61,6 @@ interface SavedStudio {
   sources: RichSources;
   rtl: boolean;
   skipDetection: boolean;
-  target: string;
   draftId: number;
   keyboard: KbDraft;
   options: SendOptions;
@@ -149,7 +148,6 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   const [uploads, setUploads] = useState<RichUpload[]>([]);
   const [rtl, setRtl] = useState(false);
   const [skipDetection, setSkipDetection] = useState(false);
-  const [target, setTarget] = useState(selectedChatId || "");
   const [draftId, setDraftId] = useState(() => (Date.now() % 2_147_483_647) || 1);
   const [keyboard, setKeyboard] = useState<KbDraft>(emptyKb);
   const [options, setOptions] = useState<SendOptions>(DEFAULT_OPTIONS);
@@ -173,6 +171,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   uploadsRef.current = uploads;
 
   const draftBotId = state.me?.id == null ? "" : String(state.me.id);
+  const target = selectedChatId || "";
   const content = sources[mode];
   const descriptors = uploads.map(({ id, field, kind }) => ({ id, field, kind }));
   const validation = useMemo(
@@ -181,6 +180,13 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   );
   const selectedTargetChat = state.chats.find((entry) => String(entry.chat.id) === target);
   const canStream = selectedTargetChat?.chat.type === "private" && uploads.length === 0;
+  const streamUnavailableReason = !selectedTargetChat
+    ? "Open a known chat before streaming a draft."
+    : selectedTargetChat.chat.type !== "private"
+      ? `Telegram rich drafts are private-chat only; the current chat is a ${selectedTargetChat.chat.type}.`
+      : uploads.length > 0
+        ? "New local uploads cannot be included in a streamed draft."
+        : "";
   const draftOnly = containsThinkingBlock(mode, content);
   liveDraftInput.current = {
     eligible: canStream,
@@ -219,11 +225,10 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
     setSources(saved.sources);
     setRtl(Boolean(saved.rtl));
     setSkipDetection(Boolean(saved.skipDetection));
-    setTarget(String(saved.target || selectedChatId || ""));
     setDraftId(Number(saved.draftId) || 1);
     setKeyboard(saved.keyboard && Array.isArray(saved.keyboard.rows) ? saved.keyboard : emptyKb);
     setOptions({ ...DEFAULT_OPTIONS, ...(saved.options || {}) });
-  }, [selectedChatId]);
+  }, []);
 
   useEffect(() => {
     if (!draftBotId || loadedDraftBot.current === draftBotId) return;
@@ -326,7 +331,6 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
       sources,
       rtl,
       skipDetection,
-      target,
       draftId,
       keyboard,
       options,
@@ -340,7 +344,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
         .then(() => setSavedAt(Date.now()))
         .catch(() => notify("Could not save the rich draft in this browser", "err"));
     }, 400);
-  }, [draftBotId, draftId, editorView, keyboard, mode, notify, options, rtl, skipDetection, sources, target]);
+  }, [draftBotId, draftId, editorView, keyboard, mode, notify, options, rtl, skipDetection, sources]);
 
   useEffect(() => () => {
     if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
@@ -350,6 +354,14 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   }, []);
 
   const setContent = (value: string) => setSources((current) => ({ ...current, [mode]: value }));
+
+  const toggleLiveDraft = (enabled: boolean) => {
+    liveDraftRequested.current = enabled;
+    liveDraftLastSignature.current = "";
+    liveDraftLastSuccessAt.current = 0;
+    setLiveDraftSentAt(null);
+    setLiveDraftEnabled(enabled);
+  };
 
   const selectEditorTab = (tab: "visual" | RichMode) => {
     if (tab === "visual") {
@@ -470,7 +482,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   }, [target, validation.message, options, keyboard, replyTo, selectedChatId]);
 
   const send = async (asDraft: boolean) => {
-    if (!target.trim()) return notify("Choose a chat the bot already knows", "err");
+    if (!target.trim()) return notify("Open the chat that should receive this rich message", "err");
     if (validation.errors.length) return notify(validation.errors[0], "err");
     if (!asDraft && draftOnly) return notify("Remove the thinking block before sending the permanent message", "err");
     if (asDraft && !canStream) {
@@ -520,7 +532,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   };
 
   const exportStudio = () => {
-    const saved: SavedStudio = { version: 1, mode, view: editorView, sources, rtl, skipDetection, target, draftId, keyboard, options };
+    const saved: SavedStudio = { version: 1, mode, view: editorView, sources, rtl, skipDetection, draftId, keyboard, options };
     const blob = new Blob([JSON.stringify(saved, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -586,30 +598,38 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
         <div className="rich-studio-grid">
           <aside className="rich-studio-sidebar scroll-y">
             <div className="rich-studio-section">
-              <div className="section-title">Destination</div>
-              <Field label="Known chat or permitted @channel">
-                <input
-                  className="input mono"
-                  list="rich-target-chats"
-                  value={target}
-                  onChange={(event) => setTarget(event.target.value.trim())}
-                  placeholder="Select a chat first"
-                />
-                <datalist id="rich-target-chats">
-                  {state.chats.map((entry) => <option key={entry.chat.id} value={String(entry.chat.id)}>{chatName(entry.chat)}</option>)}
-                </datalist>
-              </Field>
+              <div className="section-title">Current chat</div>
               {selectedTargetChat ? (
                 <div className="rich-target-card">
                   <span className="dot on" />
                   <div className="truncate-1"><strong>{chatName(selectedTargetChat.chat)}</strong><br /><span className="muted">{selectedTargetChat.chat.type} · {selectedTargetChat.chat.id}</span></div>
                 </div>
               ) : (
-                <p className="muted rich-studio-help">Bots cannot start a new user chat. Choose one already delivered to Humanoid, or a channel/bot username the Bot API permits.</p>
+                <p className="muted rich-studio-help">Close Studio and open a known chat. Rich Message Studio never restores or imports a different destination.</p>
               )}
-              {replyTo && selectedChatId === target && (
+              {replyTo && target && (
                 <Toggle checked={options.useReply} onChange={(value) => setOptions({ ...options, useReply: value })} label={`Reply to: ${messagePreview(replyTo)}`} />
               )}
+            </div>
+
+            <div className="rich-studio-section rich-thinking-card">
+              <div className="section-title">Live thinking draft</div>
+              <label className={`rich-live-draft-toggle${!canStream ? " disabled" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={liveDraftEnabled}
+                  disabled={!canStream}
+                  onChange={(event) => toggleLiveDraft(event.target.checked)}
+                />
+                <span>Stream unfinished input with Thinking every 3 seconds</span>
+              </label>
+              <p className="muted rich-studio-help">
+                {streamUnavailableReason || (liveDraftEnabled
+                  ? liveDraftSentAt
+                    ? `Updated ${new Date(liveDraftSentAt).toLocaleTimeString()}`
+                    : "Waiting for content…"
+                  : "Publishes a temporary 30-second preview under this draft id while you type.")}
+              </p>
             </div>
 
             <div className="rich-studio-section">
@@ -736,6 +756,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
               <div className="rich-preview-message">
                 <div className="rich-preview-bubble">
                   <RichMessagePreview mode={mode} content={content} rtl={rtl} media={uploads} />
+                  {liveDraftEnabled && <div className="rich-thinking-preview"><span />Thinking…</div>}
                 </div>
                 <KeyboardPreview value={keyboard} />
               </div>
@@ -754,34 +775,19 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
               <Field label="Streaming draft id" hint="Private chats only; each update lasts 30 seconds.">
                 <TextInput type="number" value={String(draftId)} onChange={(event) => setDraftId(Number(event.target.value) || 1)} />
               </Field>
-              {!canStream && <div className="rich-studio-help muted">Select a known private chat and remove new uploads to stream a draft.</div>}
+              {!canStream && <div className="rich-studio-help muted">{streamUnavailableReason}</div>}
             </div>
           </aside>
         </div>
 
         <footer className="rich-studio-footer">
           <div className="muted rich-studio-footnote">
-            <label className={`rich-live-draft-toggle${!canStream ? " disabled" : ""}`}>
-              <input
-                type="checkbox"
-                checked={liveDraftEnabled}
-                disabled={!canStream}
-                onChange={(event) => {
-                  liveDraftRequested.current = event.target.checked;
-                  liveDraftLastSignature.current = "";
-                  liveDraftLastSuccessAt.current = 0;
-                  setLiveDraftSentAt(null);
-                  setLiveDraftEnabled(event.target.checked);
-                }}
-              />
-              <span>Stream unfinished input with Thinking every 3 seconds</span>
-            </label>
             <span>
               {liveDraftEnabled
                 ? liveDraftSentAt
                   ? `Live draft updated ${new Date(liveDraftSentAt).toLocaleTimeString()}`
                   : "Live draft waiting for input…"
-                : "Exactly one representation is sent. Thinking blocks are draft-only; newly uploaded files cannot be streamed."}
+                : "Current-chat delivery only. Exactly one representation is sent; Thinking blocks are draft-only."}
             </span>
           </div>
           <button className="btn" disabled={busy !== null || liveDraftEnabled || !canStream || validation.errors.length > 0} onClick={() => void send(true)}>

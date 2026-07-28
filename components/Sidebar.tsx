@@ -124,6 +124,8 @@ export default function Sidebar({
               </button>
               <button
                 className="ctx-item"
+                disabled={!selectedChatId}
+                title={selectedChatId ? "Compose for the current chat" : "Open a chat first"}
                 onClick={() => {
                   onOpenRichEditor();
                   setMenuOpen(false);

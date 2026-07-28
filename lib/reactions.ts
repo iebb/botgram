@@ -1,5 +1,14 @@
 import type { TgAny } from "./types";
 
+/** Telegram's currently documented standard reaction emoji. */
+export const STANDARD_REACTION_EMOJI = [
+  "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢", "🎉", "🤩", "🤮", "💩",
+  "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳", "❤‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆",
+  "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈", "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈",
+  "😇", "😨", "🤝", "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿", "🆒", "💘", "🙉", "🦄",
+  "😘", "💊", "🙊", "😎", "👾", "🤷", "🤷‍♂", "🤷‍♀", "😡",
+] as const;
+
 export function reactionType(value: unknown): TgAny | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const object = value as TgAny;
@@ -57,4 +66,23 @@ export function applyReactionChange(
   adjust(oldReactions, -1);
   adjust(newReactions, 1);
   return [...counts.values()];
+}
+
+/** Finds custom emoji ids in messages, entities, reactions, and rich payloads. */
+export function collectCustomEmojiIds(value: unknown): string[] {
+  const ids = new Set<string>();
+  const visit = (candidate: unknown) => {
+    if (!candidate || typeof candidate !== "object") return;
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item);
+      return;
+    }
+    const object = candidate as Record<string, unknown>;
+    if (typeof object.custom_emoji_id === "string" && /^\d+$/.test(object.custom_emoji_id)) {
+      ids.add(object.custom_emoji_id);
+    }
+    for (const nested of Object.values(object)) visit(nested);
+  };
+  visit(value);
+  return [...ids];
 }

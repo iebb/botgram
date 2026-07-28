@@ -4,6 +4,8 @@ import {
   RICH_HTML_TAGS,
   RICH_TEMPLATES,
   buildInputRichMessage,
+  buildPlainTextThinkingDraft,
+  buildPlainTextRichMessage,
   buildThinkingRichDraft,
   containsThinkingBlock,
   extractRichCustomEmojis,
@@ -77,6 +79,12 @@ describe("Rich Message Studio payloads", () => {
     expect(
       buildThinkingRichDraft("html", "<p>Partial</p><tg-thinking>Working…</tg-thinking>", false, false).html
     ).toBe("<p>Partial</p><tg-thinking>Working…</tg-thinking>");
+    expect(buildPlainTextThinkingDraft("2 < 3\nwait & see").html).toBe(
+      "2 &lt; 3<br>wait &amp; see\n<tg-thinking>Thinking…</tg-thinking>"
+    );
+    expect(buildPlainTextRichMessage("2 < 3\nready")).toEqual({
+      html: "2 &lt; 3<br>ready",
+    });
   });
 
   it("uses Telegram's three supported rich-media reference schemes", () => {

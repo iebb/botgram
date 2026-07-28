@@ -92,14 +92,23 @@ most 24 hours), not legacy chats or arbitrary message history.
   and sticker files load only when visible.
 - Message reaction chips render observed emoji, custom emoji, paid reactions, and
   aggregate counts. Custom emoji entities and reactions resolve through
-  `getCustomEmojiStickers` and reuse the animated sticker renderer.
+  `getCustomEmojiStickers` and reuse the animated sticker renderer. The reaction
+  picker includes every custom emoji set discovered by this browser and ranks
+  sets and emoji by local frequency. Because Telegram emits no reaction update
+  for a reaction set by a bot, Humanoid mirrors a successful `setMessageReaction`
+  result into the local timeline immediately. Other users' reaction updates still
+  require the bot to be an administrator and the explicit reaction update types.
 - A dedicated Rich Message Studio with a Notion-style WYSIWYG Block Editor: draggable
   blocks, slash commands, per-block context menus, duplicate/delete/move/transform
   actions, rich paste sanitization, inline formatting, HTML source, Rich Markdown,
   native blocks, media, rendered keyboard previews, validation, import/export,
   manual streaming, and an opt-in live draft that republishes unfinished input
-  with a native Thinking block every three seconds. Draft configuration autosaves
-  per bot in IndexedDB; import/export still
+  with a native Thinking block every three seconds. Studio always sends to the
+  currently open chat; a saved or imported draft cannot restore another destination.
+  The ordinary chat composer exposes the same three-second Thinking toggle.
+  Telegram restricts streamed rich drafts to private chats and disallows direct
+  uploads in them, so the control remains visible with that reason when unavailable.
+  Draft configuration autosaves per bot in IndexedDB; import/export still
   happens only when the operator explicitly chooses a file, and upload bytes stay
   session-only.
 - Lazy user/chat avatar resolution through Telegram. File IDs are memoized only in

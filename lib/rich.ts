@@ -404,6 +404,25 @@ export function buildThinkingRichDraft(
   );
 }
 
+/** Safely represents ordinary composer text inside a native rich HTML draft. */
+export function buildPlainTextThinkingDraft(content: string): TgAny {
+  const html = plainTextRichHtml(content);
+  return buildThinkingRichDraft("html", html, false, false);
+}
+
+/** Builds the persistent counterpart used to finalize a streamed composer draft. */
+export function buildPlainTextRichMessage(content: string): TgAny {
+  return buildInputRichMessage("html", plainTextRichHtml(content), false, false, []);
+}
+
+function plainTextRichHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replace(/\r?\n/g, "<br>");
+}
+
 export function validateRichMessage(
   mode: RichMode,
   content: string,

@@ -80,6 +80,10 @@ is also available after experimenting with another webhook or `getUpdates` clien
   people can be checked by exact ID with `getChat`, subject to Telegram access.
 - Rich Message Studio opens a Notion-style Block Editor with drag handles, `/`
   commands, and block context actions. Advanced source/native views remain present.
+  Its destination is derived only from the currently selected chat; autosave and
+  import never restore a stale chat/channel target. Both Studio and the normal
+  composer expose the opt-in three-second Thinking stream. Telegram permits
+  `sendRichMessageDraft` only in private chats and without direct file uploads.
 - User profile photos use `getUserProfilePhotos`; group/channel photos use
   `getChat`. Telegram file IDs persist in IndexedDB; proxied image bytes use
   `no-store`.
@@ -89,6 +93,11 @@ is also available after experimenting with another webhook or `getUpdates` clien
 - Message reaction updates are merged into browser-local counts; anonymous
   `message_reaction_count` updates replace those counts authoritatively. Custom
   emoji media is resolved in batches of at most 200 and is never stored server-side.
+  Telegram suppresses update events for bot-made reactions, so a successful
+  `setMessageReaction` is mirrored through the Worker and an idempotent browser
+  fallback. Reactions from other users require bot administrator status plus the
+  explicitly installed reaction update types and cannot be backfilled historically.
+  The custom reaction picker hydrates observed sets and sorts them by local use.
 - Rich custom emoji insertion resolves the sticker first, defaults its required
   alternative to the sticker's own emoji, and blocks invalid or missing fallbacks.
   Telegram remains authoritative for Premium/Fragment eligibility.

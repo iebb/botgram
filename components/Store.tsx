@@ -47,13 +47,16 @@ import {
 } from "@/lib/client/indexedDb";
 import {
   emptyStickerLibrary,
+  ingestStickerUse,
   ingestStickerMessage,
   ingestStickerSnapshot,
+  mergeStickerMetadata,
   mergeStickerSet,
+  stickerMessageKey,
   stickerSetNeedsHydration,
   type StickerLibrary,
 } from "@/lib/stickers";
-import { applyReactionChange, normalizeReactionCounts } from "@/lib/reactions";
+import { applyReactionChange, collectCustomEmojiIds, normalizeReactionCounts } from "@/lib/reactions";
 
 interface State extends AppSnapshot {
   connected: boolean;
@@ -164,7 +167,13 @@ function reducer(state: State, action: Action): State {
           const list = state.messages[e.chatId] || [];
           const idx = list.findIndex((m) => messageKey(m) === messageKey(e.message));
           const next = idx >= 0 ? [...list] : [...list, e.message];
-          if (idx >= 0) next[idx] = e.message;
+          if (idx >= 0) {
+            next[idx] = {
+              ...e.message,
+              _reactions: e.message._reactions || list[idx]._reactions,
+              _botReactions: e.message._botReactions || list[idx]._botReactions,
+            };
+          }
           else next.sort((a, b) => a.date - b.date || a._seq - b._seq);
           return {
             ...state,
@@ -208,9 +217,12 @@ function reducer(state: State, action: Action): State {
                 message.message_id === e.messageId
                   ? {
                       ...message,
-                      _reactions: e.replace
-                        ? normalizeReactionCounts(e.reactions)
-                        : applyReactionChange(message._reactions, e.oldReactions, e.reactions),
+                      _reactions: e.own
+                        ? applyReactionChange(message._reactions, message._botReactions, e.reactions)
+                        : e.replace
+                          ? normalizeReactionCounts(e.reactions)
+                          : applyReactionChange(message._reactions, e.oldReactions, e.reactions),
+                      _botReactions: e.own ? e.reactions : message._botReactions,
                     }
                   : message
               ),
@@ -322,6 +334,12 @@ interface Ctx {
   refreshStickerSet: (name: string) => void;
   customEmojiStickers: Record<string, TgAny>;
   ensureCustomEmojis: (ids: string[]) => void;
+  setLocalBotReaction: (
+    chatId: string,
+    messageId: number,
+    reactions: TgAny[],
+    observationId: string
+  ) => void;
   /** The bot's fresh getChatMember result for the selected chat; undefined while loading. */
   botChatMember: TgAny | null | undefined;
 }
@@ -392,6 +410,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const customEmojiStickersRef = useRef<Record<string, TgAny>>({});
   const customEmojiRequests = useRef(new Set<string>());
   const customEmojiQueue = useRef(new Set<string>());
+  const customEmojiObservations = useRef(new Map<string, Map<string, number>>());
   const customEmojiTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const customEmojiGeneration = useRef(0);
   const storageWarningShown = useRef(false);
@@ -610,18 +629,69 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             for (const id of batch) customEmojiRequests.current.delete(id);
             return;
           }
+          const received = response.result;
+          const setNames = new Set<string>();
+          applyStickerLibrary((library) => {
+            let next = library;
+            for (const sticker of received) {
+              const id = typeof sticker?.custom_emoji_id === "string" ? sticker.custom_emoji_id : "";
+              if (!id) continue;
+              next = mergeStickerMetadata(next, sticker);
+              for (const [observationKey, observedAt] of customEmojiObservations.current.get(id) || []) {
+                next = ingestStickerUse(next, sticker, observationKey, observedAt);
+              }
+              customEmojiObservations.current.delete(id);
+              if (typeof sticker.set_name === "string" && sticker.set_name) setNames.add(sticker.set_name);
+            }
+            return next;
+          });
           setCustomEmojiStickers((current) => {
             const next = { ...current };
-            for (const sticker of response.result || []) {
+            for (const sticker of received) {
               if (typeof sticker?.custom_emoji_id === "string") next[sticker.custom_emoji_id] = sticker;
             }
             customEmojiStickersRef.current = next;
             return next;
           });
+          for (const id of batch) customEmojiRequests.current.delete(id);
+          for (const setName of setNames) requestStickerSet(setName);
         });
       }
     }, 0);
-  }, [requireLogin]);
+  }, [applyStickerLibrary, requestStickerSet, requireLogin]);
+
+  const observeCustomEmojis = useCallback((ids: string[], observationBase: string, now = Date.now()) => {
+    const unresolved: string[] = [];
+    for (const id of new Set(ids.filter((candidate) => /^\d+$/.test(candidate)))) {
+      const observationKey = `${observationBase}:custom:${id}`;
+      const sticker = customEmojiStickersRef.current[id];
+      if (sticker) {
+        applyStickerLibrary((library) => ingestStickerUse(library, sticker, observationKey, now));
+        continue;
+      }
+      const pending = customEmojiObservations.current.get(id) || new Map<string, number>();
+      if (!pending.has(observationKey)) pending.set(observationKey, now);
+      customEmojiObservations.current.set(id, pending);
+      unresolved.push(id);
+    }
+    if (unresolved.length) ensureCustomEmojis(unresolved);
+  }, [applyStickerLibrary, ensureCustomEmojis]);
+
+  const rememberCustomEmojisInMessage = useCallback((message: StoredMessage) => {
+    // Reaction changes have their own update ids. Excluding local reaction
+    // bookkeeping here prevents a reload scan from counting the same use twice.
+    const ids = collectCustomEmojiIds({
+      ...message,
+      _reactions: undefined,
+      _botReactions: undefined,
+    });
+    if (!ids.length) return;
+    observeCustomEmojis(
+      ids,
+      `message:${stickerMessageKey(message)}`,
+      message.date ? message.date * 1000 : Date.now()
+    );
+  }, [observeCustomEmojis]);
 
   useEffect(() => () => {
     if (customEmojiTimer.current) clearTimeout(customEmojiTimer.current);
@@ -668,6 +738,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     customEmojiTimer.current = null;
     customEmojiQueue.current.clear();
     customEmojiRequests.current.clear();
+    customEmojiObservations.current.clear();
     customEmojiStickersRef.current = {};
     setCustomEmojiStickers({});
     avatarRequests.current.clear();
@@ -720,6 +791,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     customEmojiTimer.current = null;
     customEmojiQueue.current.clear();
     customEmojiRequests.current.clear();
+    customEmojiObservations.current.clear();
     customEmojiStickersRef.current = {};
     setCustomEmojiStickers({});
 
@@ -736,6 +808,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setAvatarFileIds({});
       setBotChatMemberState(null);
       avatarRequests.current.clear();
+      customEmojiObservations.current.clear();
       setSelectedChatId(null);
       setReplyTo(null);
       setEditing(null);
@@ -744,6 +817,24 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     const applyEventSideEffects = (streamEvent: StreamEvent) => {
       if (streamEvent.type === "message" || streamEvent.type === "message_edited") {
         rememberStickerMessage(streamEvent.message);
+        rememberCustomEmojisInMessage(streamEvent.message);
+      }
+      if (streamEvent.type === "reaction") {
+        const ids = collectCustomEmojiIds(streamEvent.reactions);
+        if (ids.length) {
+          observeCustomEmojis(
+            ids,
+            `reaction:${streamEvent.observationId || `${streamEvent.chatId}:${streamEvent.messageId}:${JSON.stringify(streamEvent.reactions)}`}`
+          );
+        }
+      }
+      if (streamEvent.type === "chat") {
+        for (const setName of [
+          streamEvent.chat.chat.sticker_set_name,
+          streamEvent.chat.chat.custom_emoji_sticker_set_name,
+        ]) {
+          if (typeof setName === "string" && setName) requestStickerSet(setName);
+        }
       }
       if (streamEvent.type === "raw") {
         const membership = streamEvent.update.my_chat_member;
@@ -853,6 +944,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         );
         stickerLibraryRef.current = restoredStickers;
         setStickerLibrary(restoredStickers);
+        for (const list of Object.values((saved?.snapshot || fresh).messages)) {
+          for (const message of list) rememberCustomEmojisInMessage(message);
+        }
+        for (const entry of (saved?.snapshot || fresh).chats) {
+          for (const setName of [entry.chat.sticker_set_name, entry.chat.custom_emoji_sticker_set_name]) {
+            if (typeof setName === "string" && setName) requestStickerSet(setName);
+          }
+        }
         hydratedRef.current = true;
         if (botId && storageWorked) {
           setBrowserStorage("ready");
@@ -882,6 +981,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     cancelPendingSave,
     cancelPendingStickerSave,
     rememberStickerMessage,
+    rememberCustomEmojisInMessage,
+    observeCustomEmojis,
     requireLogin,
     requestStickerSet,
     warnBrowserStorage,
@@ -991,6 +1092,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setStickerLibrary(empty);
     setBotChatMemberState(null);
     avatarRequests.current.clear();
+    customEmojiObservations.current.clear();
     setSelectedChatId(null);
     setReplyTo(null);
     setEditing(null);
@@ -1009,6 +1111,25 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     },
     [notify, requireLogin]
   );
+
+  const setLocalBotReaction = useCallback((
+    chatId: string,
+    messageId: number,
+    reactions: TgAny[],
+    observationId: string
+  ) => {
+    const event: StreamEvent = {
+      type: "reaction",
+      chatId,
+      messageId,
+      reactions,
+      own: true,
+      observationId,
+    };
+    const ids = collectCustomEmojiIds(reactions);
+    if (ids.length) observeCustomEmojis(ids, `reaction:${observationId}`);
+    dispatch({ type: "event", event });
+  }, [observeCustomEmojis]);
 
   const upload = useCallback(
     async <T,>(
@@ -1135,6 +1256,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     refreshStickerSet,
     customEmojiStickers,
     ensureCustomEmojis,
+    setLocalBotReaction,
     botChatMember,
   };
 

@@ -193,6 +193,27 @@ export class BotHub extends DurableObject<Env> {
       this.emit({ type: "query_answered", id: meta.queryLocalId });
     }
 
+    // Telegram explicitly does not deliver message_reaction updates for
+    // reactions set by bots. Mirror the successful call to connected browsers
+    // so the UI and its browser-local history update immediately.
+    if (method === "setMessageReaction" && result === true) {
+      const chatId = String(params.chat_id ?? "");
+      const messageId = Number(params.message_id);
+      if (chatId && Number.isSafeInteger(messageId)) {
+        this.emit({
+          type: "reaction",
+          chatId,
+          messageId,
+          reactions: Array.isArray(params.reaction) ? params.reaction.filter(isRecord) : [],
+          own: true,
+          observationId: typeof meta.reactionLocalId === "string"
+            && /^[A-Za-z0-9:_-]{8,128}$/.test(meta.reactionLocalId)
+            ? meta.reactionLocalId
+            : `call:${crypto.randomUUID()}`,
+        });
+      }
+    }
+
     for (const message of topLevelMessages(result)) this.emitMessage(message, false, false);
   }
 
@@ -258,6 +279,7 @@ export class BotHub extends DurableObject<Env> {
         oldReactions: Array.isArray(reaction.old_reaction)
           ? reaction.old_reaction.filter(isRecord)
           : [],
+        observationId: `update:${update.update_id}`,
       });
       this.emitQuery("message_reaction", reaction);
       return;
@@ -273,6 +295,7 @@ export class BotHub extends DurableObject<Env> {
           ? reactionCount.reactions.filter(isRecord)
           : [],
         replace: true,
+        observationId: `update:${update.update_id}`,
       });
       this.emitQuery("message_reaction_count", reactionCount);
       return;

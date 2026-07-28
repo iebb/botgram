@@ -9,6 +9,7 @@ import { messagePreview } from "@/lib/format";
 import type { TgAny } from "@/lib/types";
 import StickerSelector from "./StickerSelector";
 import { attachmentKindForFiles } from "@/lib/media";
+import { buildPlainTextRichMessage, buildPlainTextThinkingDraft } from "@/lib/rich";
 import {
   IconAttach,
   IconBolt,
@@ -106,6 +107,8 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
   const [showKb, setShowKb] = useState(false);
   const [showOpts, setShowOpts] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const [thinkingSentAt, setThinkingSentAt] = useState<number | null>(null);
 
   const [opts, setOpts] = useState({
     disable_notification: false,
@@ -131,6 +134,27 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
   const emojiRef = useOutsideClick<HTMLDivElement>(() => setShowEmoji(false));
   const stickerRef = useOutsideClick<HTMLDivElement>(() => setShowStickers(false));
   const optsRef = useOutsideClick<HTMLDivElement>(() => setShowOpts(false));
+  const thinkingDraftId = useRef((Date.now() % 2_147_483_647) || 1);
+  const thinkingRequested = useRef(false);
+  const thinkingInFlight = useRef(false);
+  const thinkingPending = useRef<Promise<void> | null>(null);
+  const thinkingLastSignature = useRef("");
+  const thinkingLastSuccessAt = useRef(0);
+  const canStreamThinking = Boolean(selectedChatId && chat?.chat.type === "private" && !editing);
+  const thinkingInput = useRef({
+    eligible: false,
+    chatId: "",
+    messageThreadId: undefined as number | undefined,
+    text: "",
+    draftId: thinkingDraftId.current,
+  });
+  thinkingInput.current = {
+    eligible: canStreamThinking,
+    chatId: selectedChatId || "",
+    messageThreadId: opts.message_thread_id ? Number(opts.message_thread_id) : undefined,
+    text,
+    draftId: thinkingDraftId.current,
+  };
 
   // Load an existing message into the box when the user hits "edit".
   useEffect(() => {
@@ -146,6 +170,83 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 192) + "px";
   }, [text]);
+
+  useEffect(() => {
+    thinkingRequested.current = false;
+    setThinkingEnabled(false);
+    setThinkingSentAt(null);
+    thinkingLastSignature.current = "";
+    thinkingLastSuccessAt.current = 0;
+    thinkingDraftId.current = (Date.now() % 2_147_483_647) || 1;
+  }, [selectedChatId]);
+
+  useEffect(() => {
+    if (thinkingEnabled && !canStreamThinking) {
+      thinkingRequested.current = false;
+      setThinkingEnabled(false);
+    }
+  }, [canStreamThinking, thinkingEnabled]);
+
+  useEffect(() => {
+    if (!thinkingEnabled) return;
+    let active = true;
+
+    const publish = async () => {
+      const current = thinkingInput.current;
+      if (
+        !thinkingRequested.current
+        || !current.eligible
+        || !current.text.trim()
+        || thinkingInFlight.current
+      ) return;
+      const signature = JSON.stringify(current);
+      const now = Date.now();
+      if (signature === thinkingLastSignature.current && now - thinkingLastSuccessAt.current < 15_000) return;
+
+      thinkingInFlight.current = true;
+      try {
+        const response = await call("sendRichMessageDraft", {
+          chat_id: Number(current.chatId),
+          message_thread_id: current.messageThreadId,
+          draft_id: current.draftId,
+          rich_message: buildPlainTextThinkingDraft(current.text),
+        });
+        if (!active) return;
+        if (!response.ok) {
+          thinkingRequested.current = false;
+          setThinkingEnabled(false);
+          return;
+        }
+        thinkingLastSignature.current = signature;
+        thinkingLastSuccessAt.current = Date.now();
+        setThinkingSentAt(thinkingLastSuccessAt.current);
+      } catch (error) {
+        if (!active) return;
+        notify(error instanceof Error ? error.message : "Could not stream this draft", "err");
+        thinkingRequested.current = false;
+        setThinkingEnabled(false);
+      } finally {
+        thinkingInFlight.current = false;
+      }
+    };
+
+    const runPublish = () => {
+      const pending = publish();
+      thinkingPending.current = pending;
+      void pending.finally(() => {
+        if (thinkingPending.current === pending) thinkingPending.current = null;
+      });
+    };
+    thinkingRequested.current = true;
+    const first = window.setTimeout(runPublish, 600);
+    const interval = window.setInterval(runPublish, 3_000);
+    return () => {
+      active = false;
+      thinkingRequested.current = false;
+      window.clearTimeout(first);
+      window.clearInterval(interval);
+    };
+  }, [call, notify, thinkingEnabled]);
 
   if (!selectedChatId) return null;
 
@@ -191,8 +292,14 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
   const send = async () => {
     const body = text.trim();
     if (!body) return;
+    const finalizeThinkingDraft = thinkingEnabled;
     setBusy(true);
     try {
+      if (thinkingEnabled) {
+        thinkingRequested.current = false;
+        setThinkingEnabled(false);
+        if (thinkingPending.current) await thinkingPending.current;
+      }
       if (editing) {
         const isCaption = !editing.text && !!editing.caption;
         const ephemeral = typeof editing.ephemeral_message_id === "number";
@@ -225,14 +332,20 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
         return;
       }
 
-      const res = await call("sendMessage", {
-        ...baseParams(),
-        text: body,
-        parse_mode: parseMode === "none" ? undefined : parseMode,
-        link_preview_options: linkPreview(),
-      });
+      const res = finalizeThinkingDraft
+        ? await call("sendRichMessage", {
+            ...baseParams(),
+            rich_message: buildPlainTextRichMessage(body),
+          })
+        : await call("sendMessage", {
+            ...baseParams(),
+            text: body,
+            parse_mode: parseMode === "none" ? undefined : parseMode,
+            link_preview_options: linkPreview(),
+          });
       if (res.ok) {
         setText("");
+        setThinkingSentAt(null);
         setReplyTo(null);
         setOpts((o) => ({ ...o, quote: "" }));
       }
@@ -430,6 +543,33 @@ export default function Composer({ onOpenRichEditor }: { onOpenRichEditor: () =>
             <button className="chip accent" onClick={onOpenRichEditor} title="Open the dedicated Rich Message Studio">
               Rich studio
             </button>
+            <label
+              className={`composer-thinking-toggle${thinkingEnabled ? " active" : ""}${!canStreamThinking ? " disabled" : ""}`}
+              title={canStreamThinking
+                ? "Publish the unfinished input as a private 30-second rich draft every 3 seconds"
+                : editing
+                  ? "Finish editing before streaming a draft"
+                  : "Telegram only supports rich drafts in the current private chat"}
+            >
+              <input
+                type="checkbox"
+                checked={thinkingEnabled}
+                disabled={!canStreamThinking || busy}
+                onChange={(event) => {
+                  thinkingRequested.current = event.target.checked;
+                  thinkingLastSignature.current = "";
+                  thinkingLastSuccessAt.current = 0;
+                  setThinkingSentAt(null);
+                  setThinkingEnabled(event.target.checked);
+                }}
+              />
+              <span>Stream unfinished input with Thinking every 3 seconds</span>
+              {thinkingEnabled && (
+                <span className="composer-thinking-status">
+                  {thinkingSentAt ? new Date(thinkingSentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "waiting"}
+                </span>
+              )}
+            </label>
             {kbActive && (
               <button className="chip accent" onClick={() => setShowKb(true)}>
                 {kb.mode} keyboard ·{" "}
