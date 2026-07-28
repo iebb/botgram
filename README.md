@@ -17,27 +17,47 @@ Humanoid does not turn a bot into a user account:
   add it to a chat, or otherwise grant it a scoped interaction first.
 - The Bot API does not expose arbitrary existing chat history. Only updates that
   arrive while this dashboard is open, plus Message results from calls made in
-  that session, can appear in its timeline.
+  that browser, can enter its locally retained timeline.
 - Permissions, edit/delete windows, privacy mode, payments, business features,
   Stars, and Telegram rate limits still apply.
 
-## Ephemeral architecture
+## Semi-stateless architecture
 
 ```text
 Telegram -> /telegram/webhook -> hibernating WebSocket fanout -> React memory
-Bot API  <- authenticated Worker proxy <- current browser session
+                                                              -> browser IndexedDB
+Bot API  <- authenticated, storage-free Worker proxy <- current browser
 ```
 
 `worker/bot-hub.ts` is only an open-connection coordinator. Normal requests never
-read or write Durable Object storage. Chats, messages, update payloads, queries,
-API activity, avatars, rich drafts, and theme choices live only in the current
-browser page and vanish on reload/close. Cloudflare Worker logs and traces are
-disabled. Telegram files are returned with `Cache-Control: private, no-store`.
+read or write Durable Object storage. The browser immediately renders live events,
+then coalesces snapshots into IndexedDB. Per-bot chats, messages, incoming update
+payloads, queries, redacted API activity, resolved avatar file IDs, the selected
+chat, and Rich Studio drafts survive reloads on that browser. Theme choice is also
+local. The bot token and uploaded file bytes are never written to IndexedDB.
 
-The unavoidable state is narrowly scoped: the bot token is a Cloudflare secret,
-Telegram retains data according to Telegram's own service behavior, and the
-browser holds a signed session cookie until the browser session closes. The cookie
-contains no bot token and expires cryptographically after 24 hours.
+The retained event collections are bounded to 500 messages per chat, 300 raw
+updates, 300 API entries, and 200 queries. Browser storage remains device-local and
+may be deleted by the operator, browser cleanup, private-browsing rules, or quota
+eviction. **Clear browser history** removes the current bot's saved dashboard
+history; it does not delete Telegram messages or the separately saved Rich Studio
+draft and theme.
+
+Cloudflare Worker logs and traces are disabled. Telegram files are returned with
+`Cache-Control: private, no-store`; only their reusable Telegram file IDs are
+memoized locally.
+
+The unavoidable server-side state is narrowly scoped: the bot token is a
+Cloudflare secret, Telegram retains data according to Telegram's own service
+behavior, and the browser holds a signed session cookie until the browser session
+closes. The cookie contains no bot token and expires cryptographically after 24
+hours.
+
+IndexedDB is not a Bot API history source. This dashboard only saves updates that
+reach an open browser and Message results from its own API calls. With the
+production webhook installed, `getUpdates` cannot run. Even after removing the
+webhook, `getUpdates` returns only Telegram's pending update queue (kept for at
+most 24 hours), not legacy chats or arbitrary message history.
 
 ## Features
 
@@ -47,11 +67,13 @@ contains no bot token and expires cryptographically after 24 hours.
   blocks, slash commands, per-block context menus, duplicate/delete/move/transform
   actions, rich paste sanitization, inline formatting, HTML source, Rich Markdown,
   native blocks, media, keyboard editing, validation, import/export, and streaming
-  drafts. Import/export happens only when the operator explicitly chooses a file.
+  drafts. Draft configuration autosaves per bot in IndexedDB; import/export still
+  happens only when the operator explicitly chooses a file, and upload bytes stay
+  session-only.
 - Lazy user/chat avatar resolution through Telegram. File IDs are memoized only in
-  the current React session; avatar bytes are not cached by Humanoid.
+  the current browser; avatar bytes are not cached by Humanoid.
 - Live raw updates, answerable callback/inline/payment/join queries, and a redacted
-  API activity view, all limited to the open page.
+  API activity view, persisted locally with bounded history.
 
 ## Security
 

@@ -19,7 +19,16 @@ import type {
   TgChat,
   TgUser,
 } from "@/lib/types";
-import { avatar, tg, tgUpload, type CallMeta, type TgResult } from "@/lib/client/api";
+import { avatar, polling as pollingApi, tg, tgUpload, type CallMeta, type TgResult } from "@/lib/client/api";
+import {
+  browserStorageAvailable,
+  clearDashboard,
+  loadDashboard,
+  loadPreference,
+  saveDashboard,
+  savePreference,
+  type StoredDashboard,
+} from "@/lib/client/indexedDb";
 
 interface State extends AppSnapshot {
   connected: boolean;
@@ -38,6 +47,7 @@ const EMPTY: State = {
 
 type Action =
   | { type: "event"; event: StreamEvent }
+  | { type: "hydrate"; saved: AppSnapshot | null; fresh: AppSnapshot }
   | { type: "connected"; value: boolean }
   | { type: "local_read"; chatId: string }
   | { type: "reset" };
@@ -73,6 +83,23 @@ function reducer(state: State, action: Action): State {
 
     case "connected":
       return { ...state, connected: action.value };
+
+    case "hydrate": {
+      const restored = action.saved || action.fresh;
+      return {
+        ...restored,
+        me: action.fresh.me,
+        polling: action.saved
+          ? {
+              ...action.saved.polling,
+              running: action.fresh.polling.running,
+              lastError: action.fresh.polling.lastError,
+              offset: null,
+            }
+          : action.fresh.polling,
+        connected: state.connected,
+      };
+    }
 
     case "local_read": {
       const chats = state.chats.map((c) =>
@@ -250,6 +277,8 @@ interface Ctx {
   authError: string;
   login: (token: string) => Promise<boolean>;
   logout: () => Promise<void>;
+  browserStorage: "loading" | "ready" | "memory-only";
+  clearBrowserHistory: () => Promise<boolean>;
   avatarFileIds: Record<string, string | null>;
   ensureAvatar: (id: number | string, kind: "user" | "chat") => void;
 }
@@ -294,18 +323,72 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
   const [avatarFileIds, setAvatarFileIds] = useState<Record<string, string | null>>({});
+  const [browserStorage, setBrowserStorage] = useState<"loading" | "ready" | "memory-only">("loading");
+  const [activeBotId, setActiveBotId] = useState<string | null>(null);
   const toastId = useRef(0);
   const avatarRequests = useRef(new Set<string>());
+  const activeBotIdRef = useRef<string | null>(null);
+  const hydratedRef = useRef(false);
+  const pendingEvents = useRef<StreamEvent[]>([]);
+  const latestStoredDashboard = useRef<StoredDashboard | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveIdleCallback = useRef<number | null>(null);
+  const storageWarningShown = useRef(false);
+
+  const cancelPendingSave = useCallback(() => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    if (saveIdleCallback.current != null) {
+      if (typeof window.cancelIdleCallback === "function") {
+        window.cancelIdleCallback(saveIdleCallback.current);
+      }
+      saveIdleCallback.current = null;
+    }
+  }, []);
+
+  // ------------------------------------------------------------- toasts
+  const notify = useCallback((text: string, kind: "ok" | "err" = "ok") => {
+    const id = ++toastId.current;
+    setToasts((t) => [...t, { id, text, kind }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "err" ? 6000 : 3000);
+  }, []);
+
+  const warnBrowserStorage = useCallback(() => {
+    setBrowserStorage("memory-only");
+    if (storageWarningShown.current) return;
+    storageWarningShown.current = true;
+    notify("IndexedDB is unavailable; this tab is running memory-only", "err");
+  }, [notify]);
 
   // -------------------------------------------------------------- theme
   useEffect(() => {
+    let cancelled = false;
     document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    if (!browserStorageAvailable()) {
+      warnBrowserStorage();
+      return;
+    }
+    void loadPreference<"light" | "dark">("theme")
+      .then((saved) => {
+        if (cancelled || (saved !== "light" && saved !== "dark")) return;
+        setThemeState(saved);
+        document.documentElement.dataset.theme = saved;
+      })
+      .catch(warnBrowserStorage);
+    return () => {
+      cancelled = true;
+    };
+    // Initial preference hydration runs once; later changes use setTheme.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const setTheme = useCallback((t: "light" | "dark") => {
     setThemeState(t);
     document.documentElement.dataset.theme = t;
-  }, []);
+    if (browserStorageAvailable()) void savePreference("theme", t).catch(warnBrowserStorage);
+  }, [warnBrowserStorage]);
 
   // --------------------------------------------------------------- auth
   useEffect(() => {
@@ -354,13 +437,21 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
+      cancelPendingSave();
+      const record = latestStoredDashboard.current;
+      if (record) void saveDashboard(record).catch(() => undefined);
+      latestStoredDashboard.current = null;
+      hydratedRef.current = false;
+      activeBotIdRef.current = null;
+      pendingEvents.current = [];
+      setActiveBotId(null);
       dispatch({ type: "reset" });
       setSelectedChatId(null);
       setAvatarFileIds({});
       avatarRequests.current.clear();
       setAuthStatus("required");
     }
-  }, []);
+  }, [cancelPendingSave]);
 
   // ------------------------------------------------------------- stream
   useEffect(() => {
@@ -370,6 +461,38 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryMs = 250;
 
+    hydratedRef.current = false;
+    activeBotIdRef.current = null;
+    pendingEvents.current = [];
+    setActiveBotId(null);
+    setBrowserStorage(browserStorageAvailable() ? "loading" : "memory-only");
+
+    const clearPersistedState = (botId: string) => {
+      cancelPendingSave();
+      latestStoredDashboard.current = null;
+      void clearDashboard(botId).catch(warnBrowserStorage);
+      setAvatarFileIds({});
+      avatarRequests.current.clear();
+      setSelectedChatId(null);
+      setReplyTo(null);
+      setEditing(null);
+    };
+
+    const deliverEvent = (streamEvent: StreamEvent) => {
+      if (streamEvent.type === "ready") {
+        dispatch({ type: "event", event: streamEvent });
+        return;
+      }
+      if (!hydratedRef.current) {
+        pendingEvents.current.push(streamEvent);
+        return;
+      }
+      dispatch({ type: "event", event: streamEvent });
+      if (streamEvent.type === "clear" && activeBotIdRef.current) {
+        clearPersistedState(activeBotIdRef.current);
+      }
+    };
+
     const connect = () => {
       if (closed) return;
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -377,7 +500,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       socket.onmessage = (event) => {
         if (event.data === "pong") return;
         try {
-          dispatch({ type: "event", event: JSON.parse(String(event.data)) as StreamEvent });
+          deliverEvent(JSON.parse(String(event.data)) as StreamEvent);
         } catch {
           /* ignore malformed frames */
         }
@@ -404,11 +527,40 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           setAuthStatus("required");
           return;
         }
-        if (response.ok) {
-          dispatch({
-            type: "event",
-            event: { type: "snapshot", data: (await response.json()) as AppSnapshot },
-          });
+        if (!response.ok) return;
+        const fresh = (await response.json()) as AppSnapshot;
+        const botId = fresh.me?.id == null ? "" : String(fresh.me.id);
+        let saved: StoredDashboard | null = null;
+        let storageWorked = browserStorageAvailable();
+        if (botId && storageWorked) {
+          try {
+            saved = await loadDashboard(botId);
+          } catch {
+            storageWorked = false;
+            warnBrowserStorage();
+          }
+        }
+        if (closed) return;
+
+        dispatch({ type: "hydrate", saved: saved?.snapshot || null, fresh });
+        setAvatarFileIds(saved?.avatarFileIds || {});
+        avatarRequests.current = new Set(Object.keys(saved?.avatarFileIds || {}));
+        const restoredChatId = saved?.selectedChatId;
+        setSelectedChatId(
+          restoredChatId && saved?.snapshot.chats.some((entry) => String(entry.chat.id) === restoredChatId)
+            ? restoredChatId
+            : null
+        );
+        activeBotIdRef.current = botId || null;
+        setActiveBotId(botId || null);
+        hydratedRef.current = true;
+        if (botId && storageWorked) {
+          setBrowserStorage("ready");
+        }
+
+        for (const queued of pendingEvents.current.splice(0)) {
+          dispatch({ type: "event", event: queued });
+          if (queued.type === "clear" && botId) clearPersistedState(botId);
         }
       })
       .catch(() => undefined);
@@ -418,14 +570,78 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (retryTimer) clearTimeout(retryTimer);
       socket?.close(1000, "Page closed");
     };
-  }, [authStatus]);
+  }, [authStatus, cancelPendingSave, warnBrowserStorage]);
 
-  // ------------------------------------------------------------- toasts
-  const notify = useCallback((text: string, kind: "ok" | "err" = "ok") => {
-    const id = ++toastId.current;
-    setToasts((t) => [...t, { id, text, kind }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "err" ? 6000 : 3000);
-  }, []);
+  // Persist a bounded snapshot off the render path. Repeated live events update
+  // the in-memory UI immediately and collapse into at most one IndexedDB write
+  // per 250 ms.
+  useEffect(() => {
+    if (!activeBotId || !hydratedRef.current || browserStorage === "memory-only") return;
+    latestStoredDashboard.current = {
+      version: 1,
+      botId: activeBotId,
+      savedAt: Date.now(),
+      snapshot: {
+        me: state.me,
+        chats: state.chats,
+        messages: state.messages,
+        queries: state.queries,
+        rawUpdates: state.rawUpdates,
+        polling: state.polling,
+        log: state.log,
+      },
+      avatarFileIds: Object.fromEntries(
+        Object.entries(avatarFileIds).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      ),
+      selectedChatId,
+    };
+    if (saveTimer.current || saveIdleCallback.current != null) return;
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      const persistLatest = () => {
+        saveIdleCallback.current = null;
+        const record = latestStoredDashboard.current;
+        if (!record || record.botId !== activeBotIdRef.current) return;
+        void saveDashboard(record).catch(warnBrowserStorage);
+      };
+      if (typeof window.requestIdleCallback === "function") {
+        saveIdleCallback.current = window.requestIdleCallback(persistLatest, { timeout: 750 });
+      } else {
+        persistLatest();
+      }
+    }, 250);
+  }, [activeBotId, avatarFileIds, browserStorage, selectedChatId, state, warnBrowserStorage]);
+
+  useEffect(() => () => {
+    cancelPendingSave();
+    const record = latestStoredDashboard.current;
+    if (record && record.botId === activeBotIdRef.current) void saveDashboard(record).catch(() => undefined);
+  }, [cancelPendingSave]);
+
+  const clearBrowserHistory = useCallback(async () => {
+    const botId = activeBotIdRef.current;
+    let storageCleared = true;
+    cancelPendingSave();
+    latestStoredDashboard.current = null;
+    if (botId && browserStorageAvailable()) {
+      try {
+        await clearDashboard(botId);
+      } catch {
+        storageCleared = false;
+        warnBrowserStorage();
+      }
+    }
+    dispatch({ type: "event", event: { type: "clear" } });
+    setAvatarFileIds({});
+    avatarRequests.current.clear();
+    setSelectedChatId(null);
+    setReplyTo(null);
+    setEditing(null);
+
+    const result = await pollingApi("clear").catch(() => ({ ok: false, description: "Could not notify other open tabs" }));
+    if (!result.ok) notify(result.description || "Browser history cleared, but other tabs were not notified", "err");
+    return storageCleared;
+  }, [cancelPendingSave, notify, warnBrowserStorage]);
 
   const call = useCallback(
     async <T,>(method: string, params: TgAny = {}, meta?: CallMeta) => {
@@ -509,6 +725,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     authError,
     login,
     logout,
+    browserStorage,
+    clearBrowserHistory,
     avatarFileIds,
     ensureAvatar,
   };

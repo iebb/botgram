@@ -1,6 +1,6 @@
 "use client";
 
-import React, { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import React, { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "./Store";
 import { Field, Select, TextInput, Toggle } from "./UI";
 import KeyboardBuilder, { buildReplyMarkup, emptyKb, type KbDraft } from "./KeyboardBuilder";
@@ -22,6 +22,7 @@ import {
   type RichSources,
 } from "@/lib/rich";
 import type { TgAny } from "@/lib/types";
+import { loadRichDraft, saveRichDraft } from "@/lib/client/indexedDb";
 import {
   IconCheck,
   IconClose,
@@ -115,12 +116,17 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   const [keyboard, setKeyboard] = useState<KbDraft>(emptyKb);
   const [options, setOptions] = useState<SendOptions>(DEFAULT_OPTIONS);
   const [busy, setBusy] = useState<"send" | "draft" | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
   const sourceRef = useRef<HTMLTextAreaElement>(null);
   const wysiwygRef = useRef<RichWysiwygHandle>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const uploadsRef = useRef<RichUpload[]>([]);
+  const loadedDraftBot = useRef("");
+  const latestDraft = useRef<SavedStudio | null>(null);
+  const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   uploadsRef.current = uploads;
 
+  const draftBotId = state.me?.id == null ? "" : String(state.me.id);
   const content = sources[mode];
   const descriptors = uploads.map(({ id, field, kind }) => ({ id, field, kind }));
   const validation = useMemo(
@@ -141,7 +147,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
     for (const item of uploadsRef.current) URL.revokeObjectURL(item.previewUrl);
   }, []);
 
-  const applySaved = (saved: SavedStudio) => {
+  const applySaved = useCallback((saved: SavedStudio) => {
     if (saved?.version !== 1 || !["html", "markdown", "blocks"].includes(saved.mode)) {
       throw new Error("Unsupported rich studio file");
     }
@@ -157,7 +163,62 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
     setDraftId(Number(saved.draftId) || 1);
     setKeyboard(saved.keyboard && Array.isArray(saved.keyboard.rows) ? saved.keyboard : emptyKb);
     setOptions({ ...DEFAULT_OPTIONS, ...(saved.options || {}) });
-  };
+  }, [selectedChatId]);
+
+  useEffect(() => {
+    if (!draftBotId || loadedDraftBot.current === draftBotId) return;
+    let cancelled = false;
+    loadedDraftBot.current = "";
+    void loadRichDraft<SavedStudio>(draftBotId)
+      .then((saved) => {
+        if (cancelled) return;
+        if (saved) {
+          applySaved(saved);
+          setSavedAt(Date.now());
+        }
+        loadedDraftBot.current = draftBotId;
+      })
+      .catch(() => {
+        if (cancelled) return;
+        loadedDraftBot.current = draftBotId;
+        notify("Rich draft storage is unavailable; editing remains in memory", "err");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applySaved, draftBotId, notify]);
+
+  useEffect(() => {
+    if (!draftBotId || loadedDraftBot.current !== draftBotId) return;
+    latestDraft.current = {
+      version: 1,
+      mode,
+      view: editorView,
+      sources,
+      rtl,
+      skipDetection,
+      target,
+      draftId,
+      keyboard,
+      options,
+    };
+    if (draftSaveTimer.current) return;
+    draftSaveTimer.current = setTimeout(() => {
+      draftSaveTimer.current = null;
+      const draft = latestDraft.current;
+      if (!draft || loadedDraftBot.current !== draftBotId) return;
+      void saveRichDraft(draftBotId, draft)
+        .then(() => setSavedAt(Date.now()))
+        .catch(() => notify("Could not save the rich draft in this browser", "err"));
+    }, 400);
+  }, [draftBotId, draftId, editorView, keyboard, mode, notify, options, rtl, skipDetection, sources, target]);
+
+  useEffect(() => () => {
+    if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+    const draft = latestDraft.current;
+    const botId = loadedDraftBot.current;
+    if (draft && botId) void saveRichDraft(botId, draft).catch(() => undefined);
+  }, []);
 
   const setContent = (value: string) => setSources((current) => ({ ...current, [mode]: value }));
 
@@ -335,7 +396,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
   };
 
   const resetStudio = () => {
-    if (!window.confirm("Discard this in-memory rich message and start a new one?")) return;
+    if (!window.confirm("Replace the browser-saved rich draft with a new message?")) return;
     for (const item of uploads) URL.revokeObjectURL(item.previewUrl);
     setUploads([]);
     setSources(DEFAULT_RICH_SOURCES);
@@ -360,7 +421,7 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
             </div>
           </div>
           <div className="rich-studio-save muted">
-            <IconCheck size={14} /> Ephemeral · discarded when this page closes
+            <IconCheck size={14} /> {savedAt ? `Saved in this browser ${new Date(savedAt).toLocaleTimeString()}` : "IndexedDB autosave ready"} · upload files stay session-only
           </div>
           <div className="rich-studio-header-actions">
             <button className="btn sm ghost" onClick={resetStudio}>New</button>

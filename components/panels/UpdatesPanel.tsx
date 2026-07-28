@@ -8,7 +8,7 @@ import { userName } from "@/lib/format";
 import type { PendingQuery } from "@/lib/types";
 
 export default function UpdatesPanel() {
-  const { state, notify } = useStore();
+  const { state, notify, browserStorage, clearBrowserHistory } = useStore();
   const [view, setView] = useState<"queries" | "raw" | "log">("queries");
   const p = state.polling;
 
@@ -22,10 +22,16 @@ export default function UpdatesPanel() {
             {p.running ? "Telegram webhook active" : "Webhook needs attention"}
             <span className="muted">
               {p.lastPollAt ? ` · last update ${new Date(p.lastPollAt).toLocaleTimeString()}` : ""}
-              {` · ${p.updatesSeen} this session`}
+              {` · ${p.updatesSeen} saved updates`}
             </span>
           </div>
         </div>
+        <div className={`chip ${browserStorage === "ready" ? "ok" : browserStorage === "memory-only" ? "err" : ""}`} style={{ marginBottom: "0.55rem" }}>
+          {browserStorage === "ready" ? "Saved in this browser · IndexedDB" : browserStorage === "memory-only" ? "Browser storage unavailable" : "Loading browser history…"}
+        </div>
+        <p className="muted" style={{ margin: "0 0 0.55rem", fontSize: "0.7rem", lineHeight: 1.45 }}>
+          Chats, incoming updates, API activity, and avatar references stay on this device. The Worker stores none of them.
+        </p>
         {p.lastError && (
           <div className="chip err" style={{ display: "block", marginBottom: "0.5rem", whiteSpace: "normal" }}>
             {p.lastError}
@@ -44,11 +50,15 @@ export default function UpdatesPanel() {
           <button
             className="btn sm"
             onClick={async () => {
-              await pollingApi("clear");
-              notify("Current dashboard session cleared");
+              if (!window.confirm("Delete Humanoid's saved chats and updates from this browser? Telegram messages are not affected.")) return;
+              const cleared = await clearBrowserHistory();
+              notify(
+                cleared ? "Saved browser history cleared" : "Current view cleared, but IndexedDB could not be erased",
+                cleared ? "ok" : "err"
+              );
             }}
           >
-            Clear current session
+            Clear browser history
           </button>
         </div>
       </div>
@@ -82,7 +92,7 @@ export default function UpdatesPanel() {
 
         {view === "raw" &&
           (state.rawUpdates.length === 0 ? (
-            <Hint>No updates received in this open page yet. Raw updates are never retained.</Hint>
+            <Hint>No incoming updates have been saved in this browser yet.</Hint>
           ) : (
             state.rawUpdates.map((u) => (
               <div key={u.update_id} className="section" style={{ borderBottomWidth: "1px" }}>
@@ -98,7 +108,7 @@ export default function UpdatesPanel() {
           ))}
 
         {view === "log" &&
-          (state.log.length === 0 ? <Hint>Bot API activity appears here only for this open page.</Hint> : state.log.map((l) => (
+          (state.log.length === 0 ? <Hint>Bot API activity will be saved locally in this browser.</Hint> : state.log.map((l) => (
             <div key={l.id} className="section" style={{ borderBottomWidth: "1px" }}>
               <div style={{ display: "flex", gap: "0.375rem", alignItems: "center", marginBottom: "0.375rem" }}>
                 <span className={`chip ${l.ok ? "ok" : "err"}`}>{l.ok ? "ok" : "error"}</span>

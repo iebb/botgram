@@ -91,7 +91,7 @@ expectStatus(session, 200, "session");
 if (!session.body?.authenticated) throw new Error("The deployed session cookie did not verify");
 
 const state = await jsonRequest("/api/state", {}, cookie);
-expectStatus(state, 200, "ephemeral state");
+expectStatus(state, 200, "storage-free server state");
 for (const key of ["chats", "queries", "rawUpdates", "log"]) {
   if (!Array.isArray(state.body?.[key]) || state.body[key].length !== 0) {
     throw new Error(`/api/state retained ${key}`);
@@ -113,7 +113,7 @@ if (!meCall.body?.ok || meCall.body.result?.username !== login.body.bot.username
 
 const events = connectEvents(cookie);
 const initial = await events.next();
-if (initial?.type !== "ready") throw new Error("WebSocket did not begin with an ephemeral ready event");
+if (initial?.type !== "ready") throw new Error("WebSocket did not begin with a ready event");
 
 const install = await jsonRequest(
   "/api/webhook/install",
@@ -149,7 +149,7 @@ console.log(JSON.stringify({
   url: baseUrl,
   bot: `@${login.body.bot.username}`,
   authenticated: true,
-  ephemeralState: true,
+  serverStateEmpty: true,
   botApiProxy: true,
   websocketReady: true,
   webhook: webhookInfo.body.result.url,

@@ -59,8 +59,8 @@ export default function ConsolePanel() {
       <div style={{ padding: "0.875rem 1rem", borderBottom: "1px solid var(--panel-border)" }}>
         <p className="muted" style={{ fontSize: "0.75rem", margin: "0 0 0.625rem", lineHeight: 1.5 }}>
           Every Bot API method, including the ones without a dedicated screen. Responses that
-          contain a Message are folded into this session's chat timeline. Results and activity are
-          discarded when the page closes or reloads.
+          contain a Message are folded into the chat timeline. Redacted results and activity are
+          saved in this browser's IndexedDB.
         </p>
 
         <Field label="Filter methods">
@@ -88,7 +88,7 @@ export default function ConsolePanel() {
         {/ManagedBotToken/.test(method) && (
           <div className="chip err" style={{ display: "block", whiteSpace: "normal", marginBottom: "0.625rem" }}>
             This response contains a live bot credential. Humanoid shows it once here and omits it
-            from the in-memory activity stream.
+            from the browser-saved activity stream.
           </div>
         )}
 

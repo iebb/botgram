@@ -78,7 +78,7 @@ export default function ChatPane({
               backdropFilter: "blur(4px)",
             }}
           >
-            Live session only · no Telegram history is fetched or stored
+            Browser-saved history · the Bot API cannot backfill legacy chats
           </div>
         </div>
       </main>

@@ -113,7 +113,7 @@ export default function MessageList({
         <div style={{ maxWidth: "45.5rem", width: "100%", margin: "0 auto" }}>
           {rows.length ? rows : (
             <div className="service-msg">
-              No retained history · new messages appear live while this page is open
+              No locally saved messages yet · new updates will persist in this browser
             </div>
           )}
         </div>

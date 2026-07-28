@@ -33,7 +33,7 @@ export default function LoginScreen() {
               id="bot-token"
               className="input login-token"
               type="password"
-              autoComplete="current-password"
+              autoComplete="off"
               spellCheck={false}
               value={token}
               onChange={(event) => setToken(event.target.value)}
@@ -48,8 +48,9 @@ export default function LoginScreen() {
         )}
 
         <div className="login-security">
-          The token is checked at the edge, exchanged for an encrypted, HTTP-only session, and is
-          never stored by the browser.
+          The token is checked at the edge and exchanged for a signed, HTTP-only session.
+          Humanoid never writes it to browser storage; chat state is saved separately in this
+          device's IndexedDB.
         </div>
       </div>
     </main>

@@ -47,7 +47,7 @@ export interface TgUpdate {
   [k: string]: any;
 }
 
-/** A message held in the current browser session, plus transient bookkeeping. */
+/** A message held in browser state, plus local bookkeeping. */
 export interface StoredMessage extends TgMessage {
   /** local: stable key; ephemeral messages have message_id=0 and need their own identity */
   _key?: string;

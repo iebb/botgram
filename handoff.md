@@ -10,17 +10,26 @@ does not use Durable Object storage.
 - `BOT_TOKEN` is a Worker secret and the dashboard login credential.
 - `/telegram/webhook` rejects updates without Telegram's expected secret header.
 - The Worker relays updates and Bot API results only to dashboards currently open.
-- React holds chats, messages, queries, raw updates, logs, and resolved avatar file
-  IDs in memory. Reloading or closing the page clears all of them.
-- Rich Studio drafts and theme choices are also memory-only. Import and export are
-  explicit local file actions, not autosave.
+- React applies live events immediately. It coalesces per-bot chats, messages,
+  queries, raw updates, redacted logs, selected chat, and resolved avatar file IDs
+  into browser IndexedDB after the render path, so they survive local reloads.
+- Rich Studio configuration autosaves per bot and theme choice is browser-local.
+  Upload file bytes remain session-only; import and export are explicit file
+  actions.
+- The Worker, Durable Object, and static application store none of this dashboard
+  history. IndexedDB remains local to one browser profile and is subject to browser
+  clearing, private-mode behavior, quota, and eviction.
 - Worker observability is disabled and proxied Telegram files use `no-store`.
 - Login uses a signed session cookie with no browser-persistence attribute. It
   contains no token and has a 24-hour signature expiry.
 
 Telegram itself still owns and retains Telegram-side messages and media. Humanoid
 cannot retrieve arbitrary existing history, and bots still cannot initiate a new
-private conversation.
+private conversation. `getUpdates` is mutually exclusive with the installed
+webhook and exposes only unconfirmed updates that Telegram retains for at most 24
+hours; it is not a legacy chat API. Updates delivered while no Humanoid browser is
+open are not recoverable from this dashboard after the webhook has acknowledged
+them.
 
 ## Operator commands
 
@@ -39,12 +48,14 @@ webhook** after experimenting with a different webhook or `getUpdates` client.
 
 ## UI behavior
 
-- **Clear current session** broadcasts an in-memory clear event to open dashboards;
-  it does not affect Telegram messages.
+- **Clear browser history** removes the current bot's saved dashboard snapshot and
+  broadcasts a clear event to other open dashboards. It does not affect Telegram
+  messages, the Rich Studio draft, or the theme.
 - Rich Message Studio opens a Notion-style block canvas with drag handles, `/`
   commands, and block context actions. Advanced source/native views remain present.
 - User profile photos use `getUserProfilePhotos`; group/channel photos use
-  `getChat`. Results are memoized only until the page closes.
+  `getChat`. Telegram file IDs persist in IndexedDB; proxied image bytes use
+  `no-store`.
 - The Console accepts every current or future Bot API method. Sensitive managed-bot
   results are omitted from the transient activity stream.
 
@@ -52,7 +63,9 @@ webhook** after experimenting with a different webhook or `getUpdates` client.
 
 Worker tests cover authentication, webhook rejection, transient WebSocket delivery,
 deduplication within a live object instance, guest/ephemeral routing, session-only
-logs, and empty snapshots. The live verifier checks login, empty state, the real bot,
+server logs, and empty server snapshots. Browser tests cover per-bot IndexedDB
+round-tripping and the separation of dashboard history from preferences and rich
+drafts. The live verifier checks login, empty server state, the real bot,
 authenticated WebSocket readiness, avatar resolution, and webhook installation
 without contacting a user. A real Telegram interaction is still required to prove
-end-to-end user-to-bot delivery.
+end-to-end user-to-bot delivery and browser restoration.

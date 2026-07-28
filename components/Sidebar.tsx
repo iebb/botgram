@@ -155,9 +155,8 @@ export default function Sidebar({
               No chats yet
             </div>
             <p style={{ fontSize: "0.8125rem", lineHeight: 1.5, margin: "0 0 0.75rem" }}>
-              Telegram does not let bots fetch existing chat history or open a conversation first.
-              Chats appear only when a new update reaches this page while it is open, and disappear
-              on reload.
+              Telegram does not let bots enumerate old chats or open a conversation first.
+              Updates received while Humanoid is open are saved here and survive local reloads.
             </p>
             {botLink && (
               <button
@@ -221,7 +220,7 @@ function BotIdentity() {
           {p.lastError
             ? p.lastError.slice(0, 44)
             : p.running
-              ? `live only · ${p.updatesSeen} updates`
+              ? `browser history · ${p.updatesSeen} updates`
               : "webhook needs attention"}
         </div>
       </div>
