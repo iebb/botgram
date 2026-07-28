@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import CustomEmoji from "./CustomEmoji";
 import RichMessageContent from "./RichMessageContent";
 import { parseRichBlocks, type RichMediaKind, type RichMode } from "@/lib/rich";
 
@@ -129,8 +130,13 @@ function renderHtmlNode(node: Node, key: string, mediaById: Map<string, string>)
         : <React.Fragment key={key}>{children}</React.Fragment>;
     }
     case "img": {
-      const source = previewSource(element.getAttribute("src") || "", mediaById);
+      const rawSource = element.getAttribute("src") || "";
       const emoji = element.getAttribute("alt") || "";
+      const customEmojiId = customEmojiIdFromSource(rawSource);
+      if (customEmojiId) {
+        return <CustomEmoji key={key} id={customEmojiId} fallback={emoji || "🙂"} />;
+      }
+      const source = previewSource(rawSource, mediaById);
       if (!source) return <span key={key}>{emoji || "[image]"}</span>;
       return <img key={key} className="rich-media" src={source} alt={emoji || "Rich media preview"} />;
     }
@@ -152,7 +158,13 @@ function renderHtmlNode(node: Node, key: string, mediaById: Map<string, string>)
     case "tg-math-block": return <div key={key} className="rich-math">{children}</div>;
     case "tg-reference": return <span key={key} className="rich-reference">{children}</span>;
     case "tg-time": return <time key={key}>{children}</time>;
-    case "tg-emoji": return <span key={key}>{children}</span>;
+    case "tg-emoji": return (
+      <CustomEmoji
+        key={key}
+        id={element.getAttribute("emoji-id") || ""}
+        fallback={element.textContent || "🙂"}
+      />
+    );
     case "tg-map": {
       const latitude = Number(element.getAttribute("lat"));
       const longitude = Number(element.getAttribute("long"));
@@ -330,9 +342,13 @@ function inlineMarkdown(
     else if (token.startsWith("![")) {
       const embedded = token.match(/^!\[([^\]]*)\]\((tg:\/\/(?:emoji|time)\?[^)]+)\)$/);
       const alt = embedded?.[1] || "";
-      nodes.push(embedded?.[2].startsWith("tg://time?")
-        ? <time key={`${key}-${index}`} title={embedded[2]}>{alt || "Formatted time"}</time>
-        : <span key={`${key}-${index}`} title={embedded?.[2]}>{alt || "◻︎"}</span>);
+      const embeddedSource = embedded?.[2] || "";
+      const customEmojiId = customEmojiIdFromSource(embeddedSource);
+      nodes.push(embeddedSource.startsWith("tg://time?")
+        ? <time key={`${key}-${index}`} title={embeddedSource}>{alt || "Formatted time"}</time>
+        : customEmojiId
+          ? <CustomEmoji key={`${key}-${index}`} id={customEmojiId} fallback={alt || "🙂"} />
+          : <span key={`${key}-${index}`}>{alt || "🙂"}</span>);
     }
     else if (token.startsWith("[^")) {
       const id = token.slice(2, -1);
@@ -361,7 +377,14 @@ function renderMarkdownMedia(
   mediaById: Map<string, string>
 ): React.ReactNode {
   if (/^tg:\/(?:emoji|time)\?/i.test(rawSource)) {
-    return <p key={key}>{caption || (rawSource.startsWith("tg://time?") ? "Formatted time" : "◻︎")}</p>;
+    const customEmojiId = customEmojiIdFromSource(rawSource);
+    return (
+      <p key={key}>
+        {customEmojiId
+          ? <CustomEmoji id={customEmojiId} fallback={caption || "🙂"} />
+          : caption || "Formatted time"}
+      </p>
+    );
   }
   const source = previewSource(rawSource, mediaById);
   if (!source) return <div className="rich-preview-error" key={key}>Media source is unavailable</div>;
@@ -382,6 +405,10 @@ function renderMarkdownMedia(
       {caption && <figcaption>{caption}</figcaption>}
     </figure>
   );
+}
+
+function customEmojiIdFromSource(source: string): string {
+  return source.match(/^tg:\/\/emoji\?id=(\d+)$/i)?.[1] || "";
 }
 
 function collectHtmlBlock(lines: string[], start: number): { source: string; nextIndex: number } {

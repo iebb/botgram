@@ -75,6 +75,9 @@ is also available after experimenting with another webhook or `getUpdates` clien
   transport credential, and opens the browser-local saved-bot chooser. Forgetting
   an account removes its localStorage token without implicitly deleting its
   IndexedDB history.
+- Sidebar search deduplicates speakers from every locally retained chat and matches
+  display names, usernames, and IDs. Private-chat rows open directly; group-only
+  people can be checked by exact ID with `getChat`, subject to Telegram access.
 - Rich Message Studio opens a Notion-style Block Editor with drag handles, `/`
   commands, and block context actions. Advanced source/native views remain present.
 - User profile photos use `getUserProfilePhotos`; group/channel photos use
@@ -83,6 +86,12 @@ is also available after experimenting with another webhook or `getUpdates` clien
 - The composer sticker selector ranks discovered sets and stickers by local use.
   `.TGS` uses a lazily imported Lottie canvas renderer and `.WEBM` uses looping
   muted video; offscreen stickers do not start animation work.
+- Message reaction updates are merged into browser-local counts; anonymous
+  `message_reaction_count` updates replace those counts authoritatively. Custom
+  emoji media is resolved in batches of at most 200 and is never stored server-side.
+- Rich custom emoji insertion resolves the sticker first, defaults its required
+  alternative to the sticker's own emoji, and blocks invalid or missing fallbacks.
+  Telegram remains authoritative for Premium/Fragment eligibility.
 - Selecting a non-private chat fetches the bot's own `getChatMember` record.
   Admin navigation is absent for non-admins, and rights-specific controls are
   omitted when their matching administrator permission is false.

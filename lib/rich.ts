@@ -79,6 +79,11 @@ export interface RichValidation {
   message?: TgAny;
 }
 
+export interface RichCustomEmojiReference {
+  id: string;
+  alternative: string;
+}
+
 export const DEFAULT_RICH_SOURCES: RichSources = {
   html: `<h2>Native rich message</h2>
 <p>Hello <b>from Humanoid</b> — with <u>structured formatting</u>, <tg-spoiler>spoilers</tg-spoiler>, and <a href="https://telegram.org">safe links</a>.</p>
@@ -437,6 +442,26 @@ export function validateRichMessage(
     warnings.push("Thinking blocks are temporary and can only be sent with sendRichMessageDraft.");
   }
 
+  const customEmojis = extractRichCustomEmojis(mode, content);
+  if (mode !== "blocks") {
+    const customEmojiTags = [...content.matchAll(/<tg-emoji\b/gi)].length;
+    const completeTags = [...content.matchAll(/<tg-emoji\b[^>]*>[\s\S]*?<\/tg-emoji\s*>/gi)].length;
+    if (customEmojiTags !== completeTags) errors.push("Every tg-emoji element needs a closing tag and fallback emoji.");
+  }
+  for (const customEmoji of customEmojis) {
+    if (!/^\d+$/.test(customEmoji.id)) {
+      errors.push("Each custom emoji needs a numeric Telegram custom emoji id.");
+    }
+    if (!validEmojiAlternative(customEmoji.alternative)) {
+      errors.push(`Custom emoji ${customEmoji.id || "(missing id)"} needs exactly one valid fallback emoji.`);
+    }
+  }
+  if (customEmojis.length) {
+    warnings.push(
+      "Telegram permits custom emoji only for eligible bots/chats; owner Premium or Fragment username rules still apply."
+    );
+  }
+
   try {
     message = buildInputRichMessage(mode, content, rtl, skipDetection, media);
   } catch (error) {
@@ -444,6 +469,96 @@ export function validateRichMessage(
   }
 
   return { errors: [...new Set(errors)], warnings: [...new Set(warnings)], message };
+}
+
+export function extractRichCustomEmojis(
+  mode: RichMode,
+  content: string
+): RichCustomEmojiReference[] {
+  const references: RichCustomEmojiReference[] = [];
+  if (mode === "blocks") {
+    try {
+      const visit = (value: unknown) => {
+        if (Array.isArray(value)) {
+          value.forEach(visit);
+          return;
+        }
+        if (!value || typeof value !== "object") return;
+        const object = value as TgAny;
+        if (object.type === "custom_emoji") {
+          references.push({
+            id: String(object.custom_emoji_id || ""),
+            alternative: String(object.alternative_text || ""),
+          });
+        }
+        Object.values(object).forEach(visit);
+      };
+      visit(parseRichBlocks(content));
+    } catch {
+      return [];
+    }
+    return uniqueCustomEmojiReferences(references);
+  }
+
+  for (const match of content.matchAll(/<tg-emoji\b([^>]*)>([\s\S]*?)<\/tg-emoji\s*>/gi)) {
+    references.push({
+      id: htmlAttribute(match[1], "emoji-id"),
+      alternative: decodeRichHtml(match[2].replace(/<[^>]*>/g, "")),
+    });
+  }
+  for (const match of content.matchAll(/<img\b([^>]*)>/gi)) {
+    const source = decodeRichHtml(htmlAttribute(match[1], "src"));
+    const id = richCustomEmojiId(source);
+    if (id !== undefined) {
+      references.push({ id, alternative: decodeRichHtml(htmlAttribute(match[1], "alt")) });
+    }
+  }
+  for (const match of content.matchAll(/!\[([^\]]*)\]\((tg:\/\/emoji\?[^)]*)\)/gi)) {
+    references.push({ id: richCustomEmojiId(match[2]) ?? "", alternative: match[1] });
+  }
+  return uniqueCustomEmojiReferences(references);
+}
+
+export function validEmojiAlternative(value: string): boolean {
+  if (!value || value !== value.trim()) return false;
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  if ([...segmenter.segment(value)].length !== 1) return false;
+  const regionalIndicators = [...value].filter((character) => /\p{Regional_Indicator}/u.test(character));
+  if (regionalIndicators.length) return regionalIndicators.length === 2;
+  return /\p{Extended_Pictographic}/u.test(value) || /[0-9#*]\uFE0F?\u20E3/u.test(value);
+}
+
+function uniqueCustomEmojiReferences(
+  references: RichCustomEmojiReference[]
+): RichCustomEmojiReference[] {
+  return [...new Map(
+    references.map((reference) => [`${reference.id}\u0000${reference.alternative}`, reference])
+  ).values()];
+}
+
+/** Returns undefined for an ordinary URI and an empty string for malformed custom-emoji markup. */
+function richCustomEmojiId(source: string): string | undefined {
+  if (!/^tg:\/\/emoji\?/i.test(source)) return undefined;
+  return source.match(/^tg:\/\/emoji\?id=([^&\s]+)$/i)?.[1] || "";
+}
+
+function htmlAttribute(attributes: string, name: string): string {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = attributes.match(new RegExp(
+    `(?:^|\\s)${escapedName}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`,
+    "i"
+  ));
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? "";
+}
+
+function decodeRichHtml(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, decimal: string) => String.fromCodePoint(Number.parseInt(decimal, 10)))
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&amp;/gi, "&");
 }
 
 export function containsThinkingBlock(mode: RichMode, content: string): boolean {

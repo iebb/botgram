@@ -53,7 +53,7 @@ export interface StoredMessage extends TgMessage {
   _key?: string;
   /** local: message was deleted through the UI (Bot API gives no delete event) */
   _deleted?: boolean;
-  /** local: reactions we observed via message_reaction updates */
+  /** local: reaction totals observed through individual and aggregate reaction updates */
   _reactions?: TgAny[];
   /** local: monotonically increasing ingest sequence, for stable sorting */
   _seq: number;
@@ -133,7 +133,14 @@ export type StreamEvent =
   | { type: "message_edited"; chatId: string; message: StoredMessage }
   | { type: "message_patch"; chatId: string; messageKey: string; patch: TgAny }
   | { type: "message_deleted"; chatId: string; messageId: number; messageKey?: string }
-  | { type: "reaction"; chatId: string; messageId: number; reactions: TgAny[] }
+  | {
+      type: "reaction";
+      chatId: string;
+      messageId: number;
+      reactions: TgAny[];
+      oldReactions?: TgAny[];
+      replace?: boolean;
+    }
   | { type: "poll_update"; poll: TgAny }
   | { type: "chat"; chat: ChatEntry }
   | { type: "query"; query: PendingQuery }

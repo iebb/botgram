@@ -90,6 +90,9 @@ most 24 hours), not legacy chats or arbitrary message history.
   locally retained sticker messages, hydrates complete sets through the Bot API,
   and sorts both sets and stickers by browser-local use frequency. Animation code
   and sticker files load only when visible.
+- Message reaction chips render observed emoji, custom emoji, paid reactions, and
+  aggregate counts. Custom emoji entities and reactions resolve through
+  `getCustomEmojiStickers` and reuse the animated sticker renderer.
 - A dedicated Rich Message Studio with a Notion-style WYSIWYG Block Editor: draggable
   blocks, slash commands, per-block context menus, duplicate/delete/move/transform
   actions, rich paste sanitization, inline formatting, HTML source, Rich Markdown,
@@ -103,6 +106,13 @@ most 24 hours), not legacy chats or arbitrary message history.
   the current browser; avatar bytes are not cached by Humanoid.
 - A browser-local multi-bot account chooser with per-bot IndexedDB history and an
   explicit forget action. Bot tokens never appear in account summaries.
+- Sidebar people search by display name, `@username`, or numeric ID across users
+  observed in this bot's locally saved chats. Exact IDs can be checked with
+  `getChat`; Telegram does not expose an arbitrary private-user directory.
+- Rich Studio rejects custom emoji without one valid Unicode fallback, verifies
+  custom emoji IDs with Telegram before sending, and uses the sticker's `emoji`
+  value as the WYSIWYG default. Telegram still enforces owner Premium/Fragment
+  eligibility and per-chat custom-reaction rules.
 - Live raw updates, answerable callback/inline/payment/join queries, and a redacted
   API activity view, persisted locally with bounded history.
 - Admin tabs and actions are omitted unless a fresh `getChatMember` result says the

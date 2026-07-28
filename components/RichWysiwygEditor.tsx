@@ -9,7 +9,9 @@ import React, {
   useState,
 } from "react";
 import type { PreviewMedia } from "./RichMessagePreview";
-import { RICH_HTML_TAGS } from "@/lib/rich";
+import { RICH_HTML_TAGS, validEmojiAlternative } from "@/lib/rich";
+import { useStore } from "./Store";
+import type { TgAny } from "@/lib/types";
 
 export interface RichWysiwygHandle {
   insertHtml: (html: string) => void;
@@ -74,6 +76,7 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
   { value, onChange, rtl, media },
   forwardedRef
 ) {
+  const { call, notify } = useStore();
   const editorRef = useRef<HTMLDivElement>(null);
   const selectionRef = useRef<Range | null>(null);
   const lastEmitted = useRef("");
@@ -173,7 +176,8 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
   const wrapSelection = (
     tag: string,
     attributes: Record<string, string> = {},
-    fallbackText = "text"
+    fallbackText = "text",
+    replaceContent = false
   ) => {
     restoreSelection();
     const editor = editorRef.current;
@@ -183,7 +187,10 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
     if (!editor.contains(range.commonAncestorContainer)) return;
     const element = document.createElement(tag);
     for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
-    if (range.collapsed) element.textContent = fallbackText;
+    if (replaceContent) {
+      range.deleteContents();
+      element.textContent = fallbackText;
+    } else if (range.collapsed) element.textContent = fallbackText;
     else element.appendChild(range.extractContents());
     range.insertNode(element);
     range.selectNodeContents(element);
@@ -205,10 +212,30 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
     wrapSelection("tg-reference", { name }, "Referenced text");
   };
 
-  const customEmojiSelection = () => {
+  const customEmojiSelection = async () => {
     const emojiId = window.prompt("Telegram custom emoji id", "5368324170671202286")?.trim() || "";
-    if (!/^\d+$/.test(emojiId)) return;
-    wrapSelection("tg-emoji", { "emoji-id": emojiId }, "👍");
+    if (!/^\d+$/.test(emojiId)) {
+      notify("Enter a numeric Telegram custom emoji id", "err");
+      return;
+    }
+    const response = await call<TgAny[]>("getCustomEmojiStickers", {
+      custom_emoji_ids: [emojiId],
+    });
+    const sticker = response.result?.find((item) => String(item.custom_emoji_id || "") === emojiId);
+    if (!response.ok || !sticker) {
+      if (response.ok) notify("Telegram could not resolve that custom emoji", "err");
+      return;
+    }
+    const recommended = typeof sticker.emoji === "string" && sticker.emoji ? sticker.emoji : "👍";
+    const alternative = window.prompt(
+      "Fallback emoji (Telegram recommends the sticker emoji)",
+      recommended
+    )?.trim() || "";
+    if (!validEmojiAlternative(alternative)) {
+      notify("The custom emoji fallback must be exactly one valid emoji", "err");
+      return;
+    }
+    wrapSelection("tg-emoji", { "emoji-id": emojiId }, alternative, true);
   };
 
   const timeSelection = () => {
@@ -304,7 +331,7 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
     ["Superscript", "x²", () => wrapSelection("sup")],
     ["Inline math", "ƒ", () => wrapSelection("tg-math", {}, "x^2 + y^2")],
     ["Reference", "Ref", referenceSelection],
-    ["Custom emoji", "🙂", customEmojiSelection],
+    ["Custom emoji", "🙂", () => void customEmojiSelection()],
     ["Date and time", "Time", timeSelection],
     ["Link", "🔗", linkSelection],
   ] as const;

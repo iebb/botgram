@@ -33,6 +33,7 @@ import {
   IconTrash,
   IconUsers,
 } from "./Icons";
+import CustomEmoji from "./CustomEmoji";
 
 const REACTIONS = [
   "👍","👎","❤️","🔥","🥰","👏","😁","🤔","🤯","😱","🤬","😢","🎉","🤩","🤮","💩",
@@ -459,10 +460,26 @@ function ReactionModal({ message, onClose }: { message: StoredMessage; onClose: 
   const [picked, setPicked] = useState<string[]>([]);
   const [big, setBig] = useState(false);
   const [customId, setCustomId] = useState("");
+  const [previewCustomId, setPreviewCustomId] = useState("");
 
   const apply = async () => {
-    const reaction = customId
-      ? [{ type: "custom_emoji", custom_emoji_id: customId }]
+    const normalizedCustomId = customId.trim();
+    if (normalizedCustomId && !/^\d+$/.test(normalizedCustomId)) {
+      notify("Enter a numeric Telegram custom emoji id", "err");
+      return;
+    }
+    if (normalizedCustomId) {
+      const lookup = await call<TgAny[]>("getCustomEmojiStickers", {
+        custom_emoji_ids: [normalizedCustomId],
+      });
+      if (!lookup.ok) return;
+      if (!(lookup.result || []).some((sticker) => String(sticker.custom_emoji_id || "") === normalizedCustomId)) {
+        notify("Telegram could not resolve that custom emoji", "err");
+        return;
+      }
+    }
+    const reaction = normalizedCustomId
+      ? [{ type: "custom_emoji", custom_emoji_id: normalizedCustomId }]
       : picked.map((emoji) => ({ type: "emoji", emoji }));
     const res = await call("setMessageReaction", {
       chat_id: Number(selectedChatId),
@@ -502,7 +519,7 @@ function ReactionModal({ message, onClose }: { message: StoredMessage; onClose: 
         {REACTIONS.map((r) => (
           <button
             key={r}
-            onClick={() => setPicked((p) => (p.includes(r) ? p.filter((x) => x !== r) : [...p, r]))}
+            onClick={() => setPicked((p) => (p[0] === r ? [] : [r]))}
             style={{
               fontSize: "1.375rem",
               padding: "0.25rem",
@@ -515,11 +532,28 @@ function ReactionModal({ message, onClose }: { message: StoredMessage; onClose: 
         ))}
       </div>
       <Field label="Custom emoji id (premium)" hint="Overrides the picks above when set.">
-        <TextInput value={customId} onChange={(e) => setCustomId(e.target.value)} />
+        <TextInput
+          value={customId}
+          onChange={(e) => {
+            setCustomId(e.target.value);
+            if (!/^\d+$/.test(e.target.value.trim())) setPreviewCustomId("");
+          }}
+          onBlur={() => {
+            const value = customId.trim();
+            setPreviewCustomId(/^\d+$/.test(value) ? value : "");
+          }}
+        />
       </Field>
+      {previewCustomId && (
+        <div className="custom-reaction-preview">
+          <CustomEmoji id={previewCustomId} fallback="🙂" />
+          <span>Telegram custom emoji preview</span>
+        </div>
+      )}
       <Toggle checked={big} onChange={setBig} label="Big animation (is_big)" />
       <p className="muted" style={{ fontSize: "0.75rem" }}>
-        A bot may set exactly one reaction per message. Applying an empty selection removes it.
+        A bot may set exactly one reaction per message. A custom reaction must already be present
+        on the message or be allowed by the chat administrators. Applying an empty selection removes it.
       </p>
     </Modal>
   );

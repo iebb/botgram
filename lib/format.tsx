@@ -2,6 +2,7 @@
 
 import React from "react";
 import type { TgAny, TgChat, TgMessage, TgUser } from "./types";
+import CustomEmoji from "@/components/CustomEmoji";
 
 /* ------------------------------------------------------------------ names */
 
@@ -126,7 +127,12 @@ function Spoiler({ children }: { children: React.ReactNode }) {
   );
 }
 
-function wrapEntity(e: TgAny, children: React.ReactNode, key: string): React.ReactNode {
+function wrapEntity(
+  e: TgAny,
+  children: React.ReactNode,
+  key: string,
+  fallbackText = "🙂"
+): React.ReactNode {
   switch (e.type) {
     case "bold":
       return <strong key={key}>{children}</strong>;
@@ -210,9 +216,11 @@ function wrapEntity(e: TgAny, children: React.ReactNode, key: string): React.Rea
       );
     case "custom_emoji":
       return (
-        <span key={key} title={`custom emoji ${e.custom_emoji_id}`}>
-          {children}
-        </span>
+        <CustomEmoji
+          key={key}
+          id={String(e.custom_emoji_id || "")}
+          fallback={fallbackText}
+        />
       );
     default:
       return <span key={key}>{children}</span>;
@@ -246,7 +254,12 @@ export function renderEntities(text: string, entities?: TgAny[]): React.ReactNod
           ? build(children, e.offset, eEnd, depth + 1)
           : [withLineBreaks(text.slice(e.offset, eEnd), `i${depth}-${e.offset}`)];
 
-      out.push(wrapEntity(e, inner, `e${depth}-${e.offset}-${e.type}`));
+      out.push(wrapEntity(
+        e,
+        inner,
+        `e${depth}-${e.offset}-${e.type}`,
+        text.slice(e.offset, eEnd)
+      ));
       cursor = eEnd;
     }
 

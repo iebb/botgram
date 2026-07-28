@@ -6,8 +6,10 @@ import {
   buildInputRichMessage,
   buildThinkingRichDraft,
   containsThinkingBlock,
+  extractRichCustomEmojis,
   richMediaMarkup,
   validateRichMessage,
+  validEmojiAlternative,
 } from "../lib/rich";
 
 describe("Rich Message Studio payloads", () => {
@@ -83,5 +85,52 @@ describe("Rich Message Studio payloads", () => {
     expect(richMediaMarkup({ id: "clip", field: "c", kind: "video" })).toContain("tg://video?id=clip");
     expect(richMediaMarkup({ id: "song", field: "d", kind: "audio" })).toContain("tg://audio?id=song");
     expect(richMediaMarkup({ id: "voice", field: "e", kind: "voice_note" })).toContain("tg://audio?id=voice");
+  });
+
+  it("requires one valid Unicode fallback for every custom emoji representation", () => {
+    expect(validEmojiAlternative("👍")).toBe(true);
+    expect(validEmojiAlternative("👨‍👩‍👧‍👦")).toBe(true);
+    expect(validEmojiAlternative("🇯🇵")).toBe(true);
+    expect(validEmojiAlternative("text")).toBe(false);
+    expect(validEmojiAlternative("👍👍")).toBe(false);
+
+    expect(validateRichMessage(
+      "html",
+      '<p><tg-emoji emoji-id="5368324170671202286">not emoji</tg-emoji></p>',
+      false,
+      false,
+      []
+    ).errors).toContain("Custom emoji 5368324170671202286 needs exactly one valid fallback emoji.");
+    expect(validateRichMessage(
+      "markdown",
+      "![👍](tg://emoji?id=5368324170671202286)",
+      false,
+      false,
+      []
+    ).errors).toEqual([]);
+    expect(validateRichMessage(
+      "blocks",
+      '[{"type":"paragraph","text":{"type":"custom_emoji","custom_emoji_id":"5368324170671202286","alternative_text":"👍"}}]',
+      false,
+      false,
+      []
+    ).errors).toEqual([]);
+    expect(validateRichMessage(
+      "markdown",
+      "![👍](tg://emoji?id=)",
+      false,
+      false,
+      []
+    ).errors).toContain("Each custom emoji needs a numeric Telegram custom emoji id.");
+  });
+
+  it("extracts custom emoji ids and alternatives for Telegram preflight", () => {
+    expect(extractRichCustomEmojis(
+      "html",
+      '<tg-emoji emoji-id="1">👍</tg-emoji><img src="tg://emoji?id=2" alt="👋">'
+    )).toEqual([
+      { id: "1", alternative: "👍" },
+      { id: "2", alternative: "👋" },
+    ]);
   });
 });

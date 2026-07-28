@@ -227,4 +227,50 @@ describe("Humanoid Worker", () => {
     });
     socket.close(1000, "test complete");
   });
+
+  it("streams individual and aggregate reactions for browser rendering", async () => {
+    const socket = await openSocket();
+    const individualFrames = collectFrames(socket, 3);
+    await (await hub()).ingestUpdateJson(JSON.stringify({
+      update_id: 31,
+      message_reaction: {
+        chat: CHAT,
+        message_id: 42,
+        date: Math.floor(Date.now() / 1000),
+        user: { id: 707, is_bot: false, first_name: "Ada" },
+        old_reaction: [{ type: "emoji", emoji: "👋" }],
+        new_reaction: [{ type: "custom_emoji", custom_emoji_id: "5368324170671202286" }],
+      },
+    }));
+    expect((await individualFrames).find((frame) => frame.type === "reaction")).toMatchObject({
+      type: "reaction",
+      messageId: 42,
+      oldReactions: [{ type: "emoji", emoji: "👋" }],
+      reactions: [{ type: "custom_emoji", custom_emoji_id: "5368324170671202286" }],
+    });
+
+    const aggregateFrames = collectFrames(socket, 3);
+    await (await hub()).ingestUpdateJson(JSON.stringify({
+      update_id: 32,
+      message_reaction_count: {
+        chat: CHAT,
+        message_id: 42,
+        date: Math.floor(Date.now() / 1000),
+        reactions: [
+          { type: { type: "emoji", emoji: "👋" }, total_count: 2 },
+          { type: { type: "custom_emoji", custom_emoji_id: "5368324170671202286" }, total_count: 1 },
+        ],
+      },
+    }));
+    expect((await aggregateFrames).find((frame) => frame.type === "reaction")).toMatchObject({
+      type: "reaction",
+      messageId: 42,
+      replace: true,
+      reactions: [
+        { type: { type: "emoji", emoji: "👋" }, total_count: 2 },
+        { type: { type: "custom_emoji" }, total_count: 1 },
+      ],
+    });
+    socket.close(1000, "test complete");
+  });
 });

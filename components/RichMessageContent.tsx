@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import type { TgAny } from "@/lib/types";
 import { bestPhoto, fileSrc } from "@/lib/format";
+import CustomEmoji from "./CustomEmoji";
 
 export default function RichMessageContent({ rich }: { rich: TgAny }) {
   const blocks = Array.isArray(rich?.blocks) ? rich.blocks : [];
@@ -104,7 +105,12 @@ function RichTextView({ value }: { value: unknown }): React.ReactNode {
     case "superscript": return <sup>{child}</sup>;
     case "marked": return <mark>{child}</mark>;
     case "code": return <code className="tg-code">{child}</code>;
-    case "custom_emoji": return <span title={`custom emoji ${String(text.custom_emoji_id || "")}`}>{String(text.alternative_text || "◻︎")}</span>;
+    case "custom_emoji": return (
+      <CustomEmoji
+        id={String(text.custom_emoji_id || "")}
+        fallback={String(text.alternative_text || "🙂")}
+      />
+    );
     case "mathematical_expression": return <code className="rich-inline-math">{String(text.expression || "")}</code>;
     case "url":
     case "email_address":

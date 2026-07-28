@@ -7,6 +7,8 @@ import { MessageContent } from "./MessageContent";
 import { InlineKeyboard, ReplyKeyboardPreview } from "./Keyboards";
 import { Avatar } from "./UI";
 import { IconChecks, IconDots, IconPin } from "./Icons";
+import CustomEmoji from "./CustomEmoji";
+import { normalizeReactionCounts, reactionKey, reactionType } from "@/lib/reactions";
 
 export type MsgAction =
   | "reply"
@@ -58,7 +60,7 @@ export function MessageItem({
     (m.sticker || m.video_note || m.dice) &&
     !m.reply_to_message;
 
-  const reactions = m._reactions || [];
+  const reactions = normalizeReactionCounts(m._reactions);
 
   return (
     <div
@@ -135,15 +137,9 @@ export function MessageItem({
         <MessageContent m={m} out={out} />
 
         {reactions.length > 0 && (
-          <div style={{ display: "flex", gap: "0.25rem", marginTop: "0.25rem", flexWrap: "wrap" }}>
-            {reactions.map((r: TgAny, i: number) => (
-              <span
-                key={i}
-                className="chip"
-                style={{ background: "rgba(127,127,127,.22)", fontSize: "0.8125rem" }}
-              >
-                {r.emoji || (r.type === "custom_emoji" ? "🎨" : "👍")}
-              </span>
+          <div className="message-reactions" aria-label="Message reactions">
+            {reactions.map((reaction: TgAny) => (
+              <ReactionChip key={reactionKey(reaction)} reaction={reaction} />
             ))}
           </div>
         )}
@@ -165,6 +161,28 @@ export function MessageItem({
 
       {!out && hover && <MenuButton onClick={(e) => onAction("json", m, e)} side="right" />}
     </div>
+  );
+}
+
+function ReactionChip({ reaction }: { reaction: TgAny }) {
+  const type = reactionType(reaction);
+  const count = Number(reaction.total_count) || 1;
+  if (!type) return null;
+  return (
+    <span className="message-reaction" title={`${count} reaction${count === 1 ? "" : "s"}`}>
+      {type.type === "custom_emoji" ? (
+        <CustomEmoji
+          id={String(type.custom_emoji_id || "")}
+          fallback="🙂"
+          className="reaction-custom-emoji"
+        />
+      ) : type.type === "paid" ? (
+        <span aria-label="Paid reaction">⭐</span>
+      ) : (
+        <span>{String(type.emoji || "👍")}</span>
+      )}
+      {count > 1 && <span className="message-reaction-count">{count}</span>}
+    </span>
   );
 }
 

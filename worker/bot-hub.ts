@@ -248,18 +248,33 @@ export class BotHub extends DurableObject<Env> {
     if (isRecord(reaction) && isChat(reaction.chat)) {
       const reactionChat = reaction.chat;
       const reactions = Array.isArray(reaction.new_reaction)
-        ? reaction.new_reaction.map((item) => ({
-            ...(isRecord(item) ? item : {}),
-            user: reaction.user,
-          }))
+        ? reaction.new_reaction.filter(isRecord)
         : [];
       this.emit({
         type: "reaction",
         chatId: String(reactionChat.id),
         messageId: typeof reaction.message_id === "number" ? reaction.message_id : 0,
         reactions,
+        oldReactions: Array.isArray(reaction.old_reaction)
+          ? reaction.old_reaction.filter(isRecord)
+          : [],
       });
       this.emitQuery("message_reaction", reaction);
+      return;
+    }
+
+    const reactionCount = update.message_reaction_count;
+    if (isRecord(reactionCount) && isChat(reactionCount.chat)) {
+      this.emit({
+        type: "reaction",
+        chatId: String(reactionCount.chat.id),
+        messageId: typeof reactionCount.message_id === "number" ? reactionCount.message_id : 0,
+        reactions: Array.isArray(reactionCount.reactions)
+          ? reactionCount.reactions.filter(isRecord)
+          : [],
+        replace: true,
+      });
+      this.emitQuery("message_reaction_count", reactionCount);
       return;
     }
 
@@ -283,10 +298,6 @@ export class BotHub extends DurableObject<Env> {
       return;
     }
 
-    if (isRecord(update.message_reaction_count)) {
-      this.emitQuery("message_reaction_count", update.message_reaction_count);
-      return;
-    }
     this.emitQuery("other", update);
   }
 

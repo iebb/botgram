@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useDeferredValue, useMemo, useState } from "react";
 import { useStore } from "./Store";
 import { Avatar, useOutsideClick } from "./UI";
 import {
@@ -14,10 +14,12 @@ import {
   IconSearch,
   IconSun,
   IconTerminal,
+  IconUsers,
   IconWebhook,
 } from "./Icons";
-import { chatName, listTime, messagePreview } from "@/lib/format";
-import type { ChatEntry } from "@/lib/types";
+import { chatName, listTime, messagePreview, userName } from "@/lib/format";
+import { collectKnownPeople, exactUserId, searchKnownPeople, type KnownPerson } from "@/lib/people";
+import type { ChatEntry, TgChat } from "@/lib/types";
 
 export default function Sidebar({
   onOpenPanel,
@@ -26,20 +28,47 @@ export default function Sidebar({
   onOpenPanel: (tab: string) => void;
   onOpenRichEditor: () => void;
 }) {
-  const { state, selectedChatId, selectChat, theme, setTheme, notify, logout } = useStore();
+  const { state, selectedChatId, selectChat, theme, setTheme, notify, logout, call } = useStore();
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [resolvingId, setResolvingId] = useState<number | null>(null);
   const menuRef = useOutsideClick<HTMLDivElement>(() => setMenuOpen(false));
 
   const chats = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = deferredQuery.trim().toLowerCase();
     if (!q) return state.chats;
     return state.chats.filter((c) => {
+      if (c.chat.type === "private") return false;
       const name = chatName(c.chat).toLowerCase();
       const uname = (c.chat.username || "").toLowerCase();
       return name.includes(q) || uname.includes(q) || String(c.chat.id).includes(q);
     });
-  }, [state.chats, query]);
+  }, [state.chats, deferredQuery]);
+  const allPeople = useMemo(
+    () => collectKnownPeople(state.chats, state.me?.id),
+    [state.chats, state.me?.id]
+  );
+  const people = useMemo(
+    () => searchKnownPeople(allPeople, deferredQuery),
+    [allPeople, deferredQuery]
+  );
+  const searching = Boolean(deferredQuery.trim());
+  const lookupId = exactUserId(deferredQuery);
+
+  const resolveUserId = async (userId: number) => {
+    if (resolvingId != null) return;
+    setResolvingId(userId);
+    try {
+      const result = await call<TgChat>("getChat", { chat_id: userId });
+      if (!result.ok || !result.result) return;
+      setQuery("");
+      selectChat(String(result.result.id));
+      notify(`Opened ${chatName(result.result)}`);
+    } finally {
+      setResolvingId(null);
+    }
+  };
 
   const botLink = state.me?.username ? `https://t.me/${state.me.username}` : "";
 
@@ -139,7 +168,8 @@ export default function Sidebar({
           <input
             className="input"
             style={{ paddingLeft: "2.125rem", borderRadius: "1.25rem", height: "2.5rem" }}
-            placeholder="Search chats"
+            placeholder="Search chats, @username or ID"
+            aria-label="Search chats and known users"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -149,7 +179,7 @@ export default function Sidebar({
       <BotIdentity />
 
       <div className="scroll-y" style={{ flex: 1, paddingBottom: "0.5rem" }}>
-        {chats.length === 0 && (
+        {!searching && chats.length === 0 && (
           <div style={{ padding: "1.5rem 1.25rem", color: "var(--text-secondary)" }}>
             <div style={{ fontWeight: 600, color: "var(--text)", marginBottom: "0.5rem" }}>
               No chats yet
@@ -173,6 +203,7 @@ export default function Sidebar({
           </div>
         )}
 
+        {searching && chats.length > 0 && <SearchSectionLabel label="Chats" count={chats.length} />}
         {chats.map((c) => (
           <ChatRow
             key={c.chat.id}
@@ -182,8 +213,88 @@ export default function Sidebar({
             meId={state.me?.id}
           />
         ))}
+
+        {searching && people.length > 0 && <SearchSectionLabel label="People" count={people.length} />}
+        {people.map((person) => (
+          <PersonRow
+            key={person.user.id}
+            person={person}
+            busy={resolvingId === person.user.id}
+            onOpen={() => {
+              if (person.privateChatId) {
+                setQuery("");
+                selectChat(person.privateChatId);
+              } else {
+                void resolveUserId(person.user.id);
+              }
+            }}
+          />
+        ))}
+
+        {searching && lookupId != null && people.length === 0 && (
+          <button
+            type="button"
+            className="search-id-result"
+            disabled={resolvingId != null}
+            onClick={() => void resolveUserId(lookupId)}
+          >
+            <span className="search-id-icon"><IconUsers size={18} /></span>
+            <span style={{ minWidth: 0, flex: 1 }}>
+              <strong>Check Telegram for ID {lookupId}</strong>
+              <small>Works if the bot can access this private chat.</small>
+            </span>
+            <span className="search-result-action">
+              {resolvingId === lookupId ? "Checking…" : "Resolve"}
+            </span>
+          </button>
+        )}
+
+        {searching && chats.length === 0 && people.length === 0 && lookupId == null && (
+          <div className="search-empty">
+            <strong>No locally known user</strong>
+            <span>
+              Usernames are searched from messages saved in this browser. Telegram bots cannot
+              look up arbitrary people by username.
+            </span>
+          </div>
+        )}
       </div>
     </aside>
+  );
+}
+
+function SearchSectionLabel({ label, count }: { label: string; count: number }) {
+  return <div className="search-section-label">{label}<span>{count}</span></div>;
+}
+
+function PersonRow({
+  person,
+  busy,
+  onOpen,
+}: {
+  person: KnownPerson;
+  busy: boolean;
+  onOpen: () => void;
+}) {
+  const { user, privateChatId, sourceChats } = person;
+  const source = privateChatId
+    ? "Private chat"
+    : sourceChats.length
+      ? `Seen in ${sourceChats[0].name}${sourceChats.length > 1 ? ` +${sourceChats.length - 1}` : ""}`
+      : "Known from saved updates";
+
+  return (
+    <button type="button" className="person-row" onClick={onOpen} disabled={busy}>
+      <Avatar id={user.id} name={userName(user)} entity={user} avatarKind="user" />
+      <span className="person-row-copy">
+        <strong>{userName(user)} {user.is_bot && <span className="chip accent">BOT</span>}</strong>
+        <small>{user.username ? `@${user.username} · ` : ""}ID {user.id}</small>
+        <small>{source}</small>
+      </span>
+      <span className="search-result-action">
+        {busy ? "Checking…" : privateChatId ? "Open" : "Check ID"}
+      </span>
+    </button>
   );
 }
 

@@ -14,6 +14,7 @@ import {
   buildInputRichMessage,
   buildThinkingRichDraft,
   containsThinkingBlock,
+  extractRichCustomEmojis,
   parseRichBlocks,
   richMediaMarkup,
   validateRichMessage,
@@ -111,6 +112,7 @@ const HTML_INSERTS = [
   ["Math", "<tg-math-block>E = mc^2</tg-math-block>"],
   ["Anchor", '<a name="section"></a>'],
   ["Reference", '<tg-reference name="note">Referenced text</tg-reference>'],
+  ["Custom emoji", '<tg-emoji emoji-id="5368324170671202286">👍</tg-emoji>'],
   ["Collage", '<tg-collage><img src="https://telegram.org/example/photo.jpg"><video src="https://telegram.org/example/video.mp4"></video><figcaption>Collage caption</figcaption></tg-collage>'],
   ["Slideshow", '<tg-slideshow><img src="https://telegram.org/example/photo.jpg"><video src="https://telegram.org/example/video.mp4"></video><figcaption>Slideshow caption</figcaption></tg-slideshow>'],
   ["Thinking", "<tg-thinking>Thinking…</tg-thinking>"],
@@ -132,6 +134,7 @@ const MARKDOWN_INSERTS = [
   ["Code", "```typescript\nconst ready = true;\n```"],
   ["Math", "$$E = mc^2$$"],
   ["Footnote", "Text with a note[^note].\n\n[^note]: Footnote text."],
+  ["Custom emoji", "![👍](tg://emoji?id=5368324170671202286)"],
   ["Media", '![Media caption](https://telegram.org/example/photo.jpg "Caption")'],
   ["Details", "<details><summary>More details</summary>Expandable content</details>"],
   ["Collage", "<tg-collage>\n\n![](https://telegram.org/example/photo.jpg)\n![](https://telegram.org/example/video.mp4)\n\n</tg-collage>"],
@@ -480,6 +483,21 @@ export default function RichMessageEditor({ onClose }: { onClose: () => void }) 
     setBusy(asDraft ? "draft" : "send");
     try {
       if (!asDraft && liveDraftPending.current) await liveDraftPending.current;
+      const customEmojis = extractRichCustomEmojis(mode, content);
+      if (customEmojis.length) {
+        const customEmojiResult = await call<TgAny[]>("getCustomEmojiStickers", {
+          custom_emoji_ids: [...new Set(customEmojis.map((emoji) => emoji.id))],
+        });
+        if (!customEmojiResult.ok) return;
+        const resolvedIds = new Set(
+          (customEmojiResult.result || []).map((sticker) => String(sticker.custom_emoji_id || ""))
+        );
+        const missing = customEmojis.find((emoji) => !resolvedIds.has(emoji.id));
+        if (missing) {
+          notify(`Telegram could not resolve custom emoji ${missing.id}`, "err");
+          return;
+        }
+      }
       const params = buildParams();
       const response = asDraft
         ? await call("sendRichMessageDraft", {
