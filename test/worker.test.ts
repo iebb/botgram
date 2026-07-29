@@ -50,7 +50,14 @@ function collectFrames(socket: WebSocket, count: number): Promise<StreamEvent[]>
   });
 }
 
-async function openSocket(clientId = "test-client-0001"): Promise<WebSocket> {
+function eventsIn(frame: StreamEvent): StreamEvent[] {
+  return frame.type === "batch" ? frame.events : [frame];
+}
+
+async function openSocket(
+  clientId = "test-client-0001",
+  activate = true
+): Promise<WebSocket> {
   const response = await SELF.fetch(`https://example.com/api/ws?client=${clientId}`, {
     headers: { authorization: `Bearer ${TOKEN}`, upgrade: "websocket" },
   });
@@ -59,6 +66,7 @@ async function openSocket(clientId = "test-client-0001"): Promise<WebSocket> {
   expect(socket).not.toBeNull();
   socket!.accept();
   expect((await nextFrame(socket!)).type).toBe("ready");
+  if (activate) expect(await (await hub()).setClientActive(clientId, true)).toBe(true);
   return socket!;
 }
 
@@ -132,15 +140,49 @@ describe("Humanoid Worker", () => {
     second.close(1000, "test complete");
   });
 
+  it("does not accept queued webhook deliveries until the dashboard activates its lease", async () => {
+    const clientId = "test-client-gated";
+    const socket = await openSocket(clientId, false);
+    expect(await (await hub()).hasActiveClients()).toBe(false);
+
+    const webhookUrl =
+      `https://example.com/telegram/webhook/${await botTokenKey(TOKEN)}/${await webhookSecretDigest("right-secret")}`;
+    const paused = await SELF.fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "right-secret",
+      },
+      body: JSON.stringify(update(18)),
+    });
+    expect(paused.status).toBe(503);
+
+    expect(await (await hub()).setClientActive(clientId, true)).toBe(true);
+    const framePromise = nextFrame(socket);
+    const accepted = await SELF.fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "right-secret",
+      },
+      body: JSON.stringify(update(18)),
+    });
+    expect(accepted.status).toBe(204);
+    expect((await framePromise).type).toBe("batch");
+    socket.close(1000, "test complete");
+  });
+
   it("fans ordinary supergroup text out immediately without retaining its payload", async () => {
     const socket = await openSocket();
-    const framesPromise = collectFrames(socket, 3);
+    const framePromise = nextFrame(socket);
     const incoming = update(20);
     await (await hub()).ingestUpdateJson(JSON.stringify(incoming));
-    const frames = await framesPromise;
+    const frame = await framePromise;
+    const events = eventsIn(frame);
 
-    expect(frames.map((frame) => frame.type)).toEqual(["raw", "message", "chat"]);
-    expect(frames.find((frame) => frame.type === "message")).toMatchObject({
+    expect(frame.type).toBe("batch");
+    expect(events.map((event) => event.type)).toEqual(["raw", "message", "chat"]);
+    expect(events.find((event) => event.type === "message")).toMatchObject({
       chatId: String(CHAT.id),
       message: { text: "near-real-time", _key: "m:42" },
     });
@@ -180,7 +222,7 @@ describe("Humanoid Worker", () => {
 
   it("routes guest and ephemeral interactions as transient events", async () => {
     const socket = await openSocket();
-    const guestFrames = collectFrames(socket, 2);
+    const guestFrame = nextFrame(socket);
     await (await hub()).ingestUpdateJson(JSON.stringify({
       update_id: 26,
       guest_message: {
@@ -192,12 +234,12 @@ describe("Humanoid Worker", () => {
         text: "@bot summarize this",
       },
     }));
-    expect((await guestFrames).at(-1)).toMatchObject({
+    expect(eventsIn(await guestFrame).at(-1)).toMatchObject({
       type: "query",
       query: { id: "guest_message-guest-26", kind: "guest_message" },
     });
 
-    const messageFrames = collectFrames(socket, 3);
+    const messageFrame = nextFrame(socket);
     await (await hub()).ingestUpdateJson(JSON.stringify({
       update_id: 27,
       message: {
@@ -209,7 +251,7 @@ describe("Humanoid Worker", () => {
         text: "private command",
       },
     }));
-    expect((await messageFrames).find((frame) => frame.type === "message")).toMatchObject({
+    expect(eventsIn(await messageFrame).find((event) => event.type === "message")).toMatchObject({
       message: { _key: "e:991" },
     });
 
@@ -230,7 +272,7 @@ describe("Humanoid Worker", () => {
 
   it("streams individual and aggregate reactions for browser rendering", async () => {
     const socket = await openSocket();
-    const individualFrames = collectFrames(socket, 3);
+    const individualFrame = nextFrame(socket);
     await (await hub()).ingestUpdateJson(JSON.stringify({
       update_id: 31,
       message_reaction: {
@@ -242,14 +284,14 @@ describe("Humanoid Worker", () => {
         new_reaction: [{ type: "custom_emoji", custom_emoji_id: "5368324170671202286" }],
       },
     }));
-    expect((await individualFrames).find((frame) => frame.type === "reaction")).toMatchObject({
+    expect(eventsIn(await individualFrame).find((event) => event.type === "reaction")).toMatchObject({
       type: "reaction",
       messageId: 42,
       oldReactions: [{ type: "emoji", emoji: "👋" }],
       reactions: [{ type: "custom_emoji", custom_emoji_id: "5368324170671202286" }],
     });
 
-    const aggregateFrames = collectFrames(socket, 3);
+    const aggregateFrame = nextFrame(socket);
     await (await hub()).ingestUpdateJson(JSON.stringify({
       update_id: 32,
       message_reaction_count: {
@@ -262,7 +304,7 @@ describe("Humanoid Worker", () => {
         ],
       },
     }));
-    expect((await aggregateFrames).find((frame) => frame.type === "reaction")).toMatchObject({
+    expect(eventsIn(await aggregateFrame).find((event) => event.type === "reaction")).toMatchObject({
       type: "reaction",
       messageId: 42,
       replace: true,

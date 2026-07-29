@@ -23,6 +23,7 @@ export default function UpdatesPanel() {
             <span className="muted">
               {p.lastPollAt ? ` · last update ${new Date(p.lastPollAt).toLocaleTimeString()}` : ""}
               {` · ${p.updatesSeen} saved updates`}
+              {p.pendingUpdates ? ` · ${p.pendingUpdates} waiting at Telegram` : ""}
             </span>
           </div>
         </div>

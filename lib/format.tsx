@@ -338,6 +338,11 @@ export function serviceText(m: TgAny): string | null {
   if (m.group_chat_created) return "Group created";
   if (m.supergroup_chat_created) return "Supergroup created";
   if (m.channel_chat_created) return "Channel created";
+  if (m.community_chat_added) {
+    const name = m.community_chat_added.community?.name;
+    return name ? `Chat added to community “${name}”` : "Chat added to a community";
+  }
+  if (m.community_chat_removed) return "Chat removed from its community";
   if (m.migrate_to_chat_id) return "Group upgraded to supergroup";
   if (m.migrate_from_chat_id) return "Group upgraded from a basic group";
   if (m.pinned_message) return `Pinned: "${messagePreview(m.pinned_message)}"`;

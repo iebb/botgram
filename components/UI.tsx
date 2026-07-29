@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { avatarGradient, fileSrc, initials } from "@/lib/format";
 import type { TgAny, TgChat, TgUser } from "@/lib/types";
 import { useAvatarFileId } from "./Store";
@@ -66,18 +66,78 @@ export function Modal({
   footer?: React.ReactNode;
   wide?: boolean;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const titleId = useId();
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    onCloseRef.current = onClose;
   }, [onClose]);
 
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const dialog = dialogRef.current;
+    const focusableSelector = [
+      "button:not([disabled])",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "a[href]",
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(",");
+    const focusable = () => Array.from(
+      dialog?.querySelectorAll<HTMLElement>(focusableSelector) || []
+    ).filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
+    (focusable()[0] || dialog)?.focus();
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const controls = focusable();
+      if (!controls.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = controls[0];
+      const last = controls.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      previousFocus?.focus();
+    };
+  }, []);
+
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div
+        ref={dialogRef}
         className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         style={wide ? { maxWidth: "52rem" } : undefined}
-        onMouseDown={(e) => e.stopPropagation()}
       >
         <div
           style={{
@@ -88,7 +148,7 @@ export function Modal({
             borderBottom: "1px solid var(--panel-border)",
           }}
         >
-          <div style={{ fontWeight: 600, flex: 1 }}>{title}</div>
+          <div id={titleId} style={{ fontWeight: 600, flex: 1 }}>{title}</div>
           <button className="icon-btn" onClick={onClose} aria-label="Close">
             <IconClose size={20} />
           </button>
@@ -125,12 +185,32 @@ export function Field({
   hint?: string;
   children: React.ReactNode;
 }) {
+  const generatedId = useId();
+  const hintId = `${generatedId}-hint`;
+  const control = React.isValidElement(children)
+    ? React.cloneElement(
+        children as React.ReactElement<{ id?: string; "aria-describedby"?: string }>,
+        {
+          id: (children.props as { id?: string }).id || generatedId,
+          "aria-describedby": hint
+            ? [
+                (children.props as { "aria-describedby"?: string })["aria-describedby"],
+                hintId,
+              ].filter(Boolean).join(" ")
+            : (children.props as { "aria-describedby"?: string })["aria-describedby"],
+        }
+      )
+    : children;
+  const controlId = React.isValidElement(control)
+    ? (control.props as { id?: string }).id
+    : undefined;
+
   return (
     <div className="field">
-      {label && <label>{label}</label>}
-      {children}
+      {label && <label htmlFor={controlId}>{label}</label>}
+      {control}
       {hint && (
-        <div style={{ fontSize: "0.6875rem", color: "var(--text-tertiary)" }}>{hint}</div>
+        <div id={hintId} style={{ fontSize: "0.6875rem", color: "var(--text-tertiary)" }}>{hint}</div>
       )}
     </div>
   );

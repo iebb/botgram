@@ -44,10 +44,20 @@ export class BotHub extends DurableObject<Env> {
   private seenUpdates = new Set<number>();
   private webhookRunning = true;
   private webhookError: string | null = null;
+  private updateBatch: StreamEvent[] | null = null;
 
   private emit(event: StreamEvent): void {
+    if (this.updateBatch) {
+      this.updateBatch.push(event);
+      return;
+    }
+    this.broadcast(event);
+  }
+
+  private broadcast(event: StreamEvent): void {
     const frame = JSON.stringify(event);
     for (const socket of this.ctx.getWebSockets()) {
+      if (!isActiveAttachment(socket.deserializeAttachment())) continue;
       try {
         socket.send(frame);
       } catch {
@@ -69,9 +79,23 @@ export class BotHub extends DurableObject<Env> {
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server, ["dashboard"]);
-    server.serializeAttachment({ clientId });
+    server.serializeAttachment({ clientId, active: false });
     server.send(JSON.stringify({ type: "ready" } satisfies StreamEvent));
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  setClientActive(clientId: string, active: boolean): boolean {
+    let matched = false;
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment: unknown = socket.deserializeAttachment();
+      if (!isRecord(attachment) || attachment.released === true) continue;
+      // An empty id is a compatibility path for dashboards loaded before the
+      // activation handshake was introduced.
+      if (clientId && attachment.clientId !== clientId) continue;
+      socket.serializeAttachment({ ...attachment, active });
+      matched = true;
+    }
+    return matched;
   }
 
   releaseClientAndHasOthers(clientId: string): boolean {
@@ -85,15 +109,14 @@ export class BotHub extends DurableObject<Env> {
     }
     return sockets.some((socket) => {
       const attachment: unknown = socket.deserializeAttachment();
-      return !isRecord(attachment) || attachment.released !== true;
+      return isActiveAttachment(attachment);
     });
   }
 
   hasActiveClients(): boolean {
-    return this.ctx.getWebSockets().some((socket) => {
-      const attachment: unknown = socket.deserializeAttachment();
-      return !isRecord(attachment) || attachment.released !== true;
-    });
+    return this.ctx.getWebSockets().some((socket) =>
+      isActiveAttachment(socket.deserializeAttachment())
+    );
   }
 
   ingestUpdateIfConnectedJson(updateJson: string): boolean {
@@ -226,102 +249,109 @@ export class BotHub extends DurableObject<Env> {
       const oldest = this.seenUpdates.values().next().value;
       if (typeof oldest === "number") this.seenUpdates.delete(oldest);
     }
-    this.webhookRunning = true;
-    this.webhookError = null;
-    this.emit({ type: "raw", update });
+    const batch: StreamEvent[] = [];
+    this.updateBatch = batch;
+    try {
+      this.webhookRunning = true;
+      this.webhookError = null;
+      this.emit({ type: "raw", update });
 
-    for (const key of MESSAGE_KEYS) {
-      const candidate = update[key];
-      if (!isMessage(candidate)) continue;
-      if (key === "guest_message" && candidate.guest_query_id) {
-        this.emitQuery("guest_message", candidate);
-      } else {
-        this.emitMessage(candidate, true, false);
+      for (const key of MESSAGE_KEYS) {
+        const candidate = update[key];
+        if (!isMessage(candidate)) continue;
+        if (key === "guest_message" && candidate.guest_query_id) {
+          this.emitQuery("guest_message", candidate);
+        } else {
+          this.emitMessage(candidate, true, false);
+        }
+        return;
       }
-      return;
-    }
 
-    for (const key of EDIT_KEYS) {
-      const candidate = update[key];
-      if (!isMessage(candidate)) continue;
-      this.emitMessage(candidate, true, true);
-      return;
-    }
+      for (const key of EDIT_KEYS) {
+        const candidate = update[key];
+        if (!isMessage(candidate)) continue;
+        this.emitMessage(candidate, true, true);
+        return;
+      }
 
-    if (isRecord(update.deleted_business_messages)) {
-      const deleted = update.deleted_business_messages;
-      if (isChat(deleted.chat) && Array.isArray(deleted.message_ids)) {
-        for (const id of deleted.message_ids) {
-          if (typeof id === "number") {
-            this.emit({
-              type: "message_deleted",
-              chatId: String(deleted.chat.id),
-              messageId: id,
-              messageKey: `m:${id}`,
-            });
+      if (isRecord(update.deleted_business_messages)) {
+        const deleted = update.deleted_business_messages;
+        if (isChat(deleted.chat) && Array.isArray(deleted.message_ids)) {
+          for (const id of deleted.message_ids) {
+            if (typeof id === "number") {
+              this.emit({
+                type: "message_deleted",
+                chatId: String(deleted.chat.id),
+                messageId: id,
+                messageKey: `m:${id}`,
+              });
+            }
           }
         }
+        return;
       }
-      return;
-    }
 
-    const reaction = update.message_reaction;
-    if (isRecord(reaction) && isChat(reaction.chat)) {
-      const reactionChat = reaction.chat;
-      const reactions = Array.isArray(reaction.new_reaction)
-        ? reaction.new_reaction.filter(isRecord)
-        : [];
-      this.emit({
-        type: "reaction",
-        chatId: String(reactionChat.id),
-        messageId: typeof reaction.message_id === "number" ? reaction.message_id : 0,
-        reactions,
-        oldReactions: Array.isArray(reaction.old_reaction)
-          ? reaction.old_reaction.filter(isRecord)
-          : [],
-        observationId: `update:${update.update_id}`,
-      });
-      this.emitQuery("message_reaction", reaction);
-      return;
-    }
+      const reaction = update.message_reaction;
+      if (isRecord(reaction) && isChat(reaction.chat)) {
+        const reactionChat = reaction.chat;
+        const reactions = Array.isArray(reaction.new_reaction)
+          ? reaction.new_reaction.filter(isRecord)
+          : [];
+        this.emit({
+          type: "reaction",
+          chatId: String(reactionChat.id),
+          messageId: typeof reaction.message_id === "number" ? reaction.message_id : 0,
+          reactions,
+          oldReactions: Array.isArray(reaction.old_reaction)
+            ? reaction.old_reaction.filter(isRecord)
+            : [],
+          observationId: `update:${update.update_id}`,
+        });
+        this.emitQuery("message_reaction", reaction);
+        return;
+      }
 
-    const reactionCount = update.message_reaction_count;
-    if (isRecord(reactionCount) && isChat(reactionCount.chat)) {
-      this.emit({
-        type: "reaction",
-        chatId: String(reactionCount.chat.id),
-        messageId: typeof reactionCount.message_id === "number" ? reactionCount.message_id : 0,
-        reactions: Array.isArray(reactionCount.reactions)
-          ? reactionCount.reactions.filter(isRecord)
-          : [],
-        replace: true,
-        observationId: `update:${update.update_id}`,
-      });
-      this.emitQuery("message_reaction_count", reactionCount);
-      return;
-    }
+      const reactionCount = update.message_reaction_count;
+      if (isRecord(reactionCount) && isChat(reactionCount.chat)) {
+        this.emit({
+          type: "reaction",
+          chatId: String(reactionCount.chat.id),
+          messageId: typeof reactionCount.message_id === "number" ? reactionCount.message_id : 0,
+          reactions: Array.isArray(reactionCount.reactions)
+            ? reactionCount.reactions.filter(isRecord)
+            : [],
+          replace: true,
+          observationId: `update:${update.update_id}`,
+        });
+        this.emitQuery("message_reaction_count", reactionCount);
+        return;
+      }
 
-    if (isRecord(update.poll)) {
-      this.emit({ type: "poll_update", poll: update.poll });
-      this.emitQuery("other", { poll: update.poll });
-      return;
-    }
+      if (isRecord(update.poll)) {
+        this.emit({ type: "poll_update", poll: update.poll });
+        this.emitQuery("other", { poll: update.poll });
+        return;
+      }
 
-    for (const key of QUERY_KEYS) {
-      const payload = update[key];
-      if (!isRecord(payload)) continue;
-      const chat = isChat(payload.chat)
-        ? payload.chat
-        : isRecord(payload.message) && isChat(payload.message.chat)
-          ? payload.message.chat
-          : null;
-      const user = isUser(payload.from) ? payload.from : isUser(payload.user) ? payload.user : undefined;
-      if (chat) this.emit({ type: "chat", chat: chatEntry(chat, user) });
-      this.emitQuery(queryKind(key), payload);
-      return;
-    }
+      for (const key of QUERY_KEYS) {
+        const payload = update[key];
+        if (!isRecord(payload)) continue;
+        const chat = isChat(payload.chat)
+          ? payload.chat
+          : isRecord(payload.message) && isChat(payload.message.chat)
+            ? payload.message.chat
+            : null;
+        const user = isUser(payload.from) ? payload.from : isUser(payload.user) ? payload.user : undefined;
+        if (chat) this.emit({ type: "chat", chat: chatEntry(chat, user) });
+        this.emitQuery(queryKind(key), payload);
+        return;
+      }
 
-    this.emitQuery("other", update);
+      this.emitQuery("other", update);
+    } finally {
+      this.updateBatch = null;
+      if (batch.length) this.broadcast({ type: "batch", events: batch });
+    }
   }
 
   private emptySnapshot(): AppSnapshot {
@@ -343,6 +373,7 @@ export class BotHub extends DurableObject<Env> {
       lastError: this.webhookError,
       lastPollAt: null,
       updatesSeen: 0,
+      pendingUpdates: 0,
     };
   }
 
@@ -398,6 +429,13 @@ export class BotHub extends DurableObject<Env> {
     };
     this.emit({ type: "query", query });
   }
+}
+
+function isActiveAttachment(attachment: unknown): boolean {
+  if (!isRecord(attachment) || attachment.released === true) return false;
+  // Sockets created by an older deployment have no active field and were
+  // already eligible to receive updates, so preserve that state across deploys.
+  return attachment.active !== false;
 }
 
 function chatEntry(

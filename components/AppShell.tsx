@@ -1,12 +1,17 @@
 "use client";
 
 import React, { useState } from "react";
+import dynamic from "next/dynamic";
 import Sidebar from "./Sidebar";
 import ChatPane from "./ChatPane";
-import RightPanel from "./RightPanel";
 import { useStore } from "./Store";
 import LoginScreen from "./LoginScreen";
-import RichMessageEditor from "./RichMessageEditor";
+import BacklogGate from "./BacklogGate";
+
+const RightPanel = dynamic(() => import("./RightPanel"), {
+  loading: () => <aside className="right-panel" aria-label="Loading bot controls" />,
+});
+const RichMessageEditor = dynamic(() => import("./RichMessageEditor"), { ssr: false });
 
 export default function AppShell() {
   const { toasts, state, selectedChatId, authStatus } = useStore();
@@ -31,6 +36,7 @@ export default function AppShell() {
       />
       {panelOpen && <RightPanel tab={tab} setTab={setTab} onClose={() => setPanelOpen(false)} />}
       {richEditorOpen && <RichMessageEditor onClose={() => setRichEditorOpen(false)} />}
+      <BacklogGate />
 
       <div className="toast-stack" aria-live="polite" aria-atomic="true">
         {!state.connected && (

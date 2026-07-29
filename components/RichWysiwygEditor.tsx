@@ -342,7 +342,7 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
 
   return (
     <div className="rich-wysiwyg-shell">
-      <div className="rich-wysiwyg-toolbar" aria-label="Rich formatting toolbar">
+      <div className="rich-wysiwyg-toolbar" role="toolbar" aria-label="Rich formatting toolbar">
         {toolbar.map(([title, label, action], index) => (
           <button
             key={title}
@@ -553,7 +553,12 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
         >
           <div className="rich-menu-label">Basic blocks</div>
           {visibleCommands.length ? visibleCommands.map((item) => (
-            <button key={item.id} role="option" onClick={() => applyBlockCommand(item, slashMenu.blockId)}>
+            <button
+              key={item.id}
+              role="option"
+              aria-selected="false"
+              onClick={() => applyBlockCommand(item, slashMenu.blockId)}
+            >
               <span className="rich-command-icon">{item.icon}</span>
               <span><strong>{item.label}</strong><small>{item.hint}</small></span>
             </button>
@@ -570,21 +575,21 @@ const RichWysiwygEditor = forwardRef<RichWysiwygHandle, Props>(function RichWysi
         >
           <div className="rich-menu-label">Turn into</div>
           <div className="rich-turn-grid">
-            <button onClick={() => transformBlock("p", blockMenu.blockId)}>Text</button>
-            <button onClick={() => transformBlock("h1", blockMenu.blockId)}>H1</button>
-            <button onClick={() => transformBlock("h2", blockMenu.blockId)}>H2</button>
-            <button onClick={() => transformBlock("h3", blockMenu.blockId)}>H3</button>
-            <button onClick={() => transformBlock("h4", blockMenu.blockId)}>H4</button>
-            <button onClick={() => transformBlock("h5", blockMenu.blockId)}>H5</button>
-            <button onClick={() => transformBlock("h6", blockMenu.blockId)}>H6</button>
-            <button onClick={() => transformBlock("blockquote", blockMenu.blockId)}>Quote</button>
-            <button onClick={() => transformBlock("pre", blockMenu.blockId)}>Code</button>
+            <button role="menuitem" onClick={() => transformBlock("p", blockMenu.blockId)}>Text</button>
+            <button role="menuitem" onClick={() => transformBlock("h1", blockMenu.blockId)}>H1</button>
+            <button role="menuitem" onClick={() => transformBlock("h2", blockMenu.blockId)}>H2</button>
+            <button role="menuitem" onClick={() => transformBlock("h3", blockMenu.blockId)}>H3</button>
+            <button role="menuitem" onClick={() => transformBlock("h4", blockMenu.blockId)}>H4</button>
+            <button role="menuitem" onClick={() => transformBlock("h5", blockMenu.blockId)}>H5</button>
+            <button role="menuitem" onClick={() => transformBlock("h6", blockMenu.blockId)}>H6</button>
+            <button role="menuitem" onClick={() => transformBlock("blockquote", blockMenu.blockId)}>Quote</button>
+            <button role="menuitem" onClick={() => transformBlock("pre", blockMenu.blockId)}>Code</button>
           </div>
           <div className="rich-menu-separator" />
-          <button onClick={() => mutateBlock("duplicate", blockMenu.blockId)}><span>⧉</span> Duplicate</button>
-          <button onClick={() => mutateBlock("up", blockMenu.blockId)}><span>↑</span> Move up</button>
-          <button onClick={() => mutateBlock("down", blockMenu.blockId)}><span>↓</span> Move down</button>
-          <button className="danger" onClick={() => mutateBlock("delete", blockMenu.blockId)}><span>⌫</span> Delete</button>
+          <button role="menuitem" onClick={() => mutateBlock("duplicate", blockMenu.blockId)}><span>⧉</span> Duplicate</button>
+          <button role="menuitem" onClick={() => mutateBlock("up", blockMenu.blockId)}><span>↑</span> Move up</button>
+          <button role="menuitem" onClick={() => mutateBlock("down", blockMenu.blockId)}><span>↓</span> Move down</button>
+          <button role="menuitem" className="danger" onClick={() => mutateBlock("delete", blockMenu.blockId)}><span>⌫</span> Delete</button>
         </div>
       )}
     </div>
@@ -626,6 +631,9 @@ function makeBlock(node: Node, targetDocument: Document): HTMLElement {
   const body = targetDocument.createElement("div");
   body.className = "rich-block-content";
   body.setAttribute("contenteditable", "true");
+  body.setAttribute("role", "textbox");
+  body.setAttribute("aria-multiline", "true");
+  body.setAttribute("aria-label", "Rich message block");
   body.setAttribute("data-placeholder", "Type / for commands");
   if (node.nodeType === Node.TEXT_NODE) {
     const paragraph = targetDocument.createElement("p");

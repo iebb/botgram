@@ -2018,7 +2018,7 @@ a.tg-link:hover {
   top: 1rem;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 300;
+  z-index: 1300;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -3267,4 +3267,108 @@ a.tg-link:hover {
   .rich-media-row .select {
     grid-column: 2 / 4;
   }
+}
+.backlog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+.backlog-dialog {
+  width: min(30rem, 100%);
+  padding: 1.5rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 1.25rem;
+  background: var(--panel-bg);
+  box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.35);
+}
+
+.backlog-dialog h2 {
+  margin: 0.75rem 0 0.5rem;
+  font-size: 1.35rem;
+}
+
+.backlog-dialog p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.backlog-count {
+  display: inline-flex;
+  min-width: 3rem;
+  height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.75rem;
+  border-radius: 999px;
+  color: white;
+  background: var(--accent);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.backlog-warning {
+  display: grid;
+  gap: 0.2rem;
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
+  border-radius: 0.75rem;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+}
+
+.backlog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-top: 1.25rem;
+}
+
+.backlog-progress {
+  position: fixed;
+  z-index: 1100;
+  top: 0.75rem;
+  left: 50%;
+  width: min(24rem, calc(100vw - 2rem));
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.9rem;
+  background: color-mix(in srgb, var(--panel-bg) 92%, transparent);
+  box-shadow: 0 0.75rem 2rem rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(12px);
+  transform: translateX(-50%);
+}
+
+.backlog-progress > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.8rem;
+}
+
+.backlog-progress span {
+  color: var(--text-secondary);
+}
+
+.backlog-progress-track {
+  height: 0.25rem;
+  margin-top: 0.55rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-secondary) 18%, transparent);
+}
+
+.backlog-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 160ms ease-out;
 }

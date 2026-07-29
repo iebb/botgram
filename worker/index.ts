@@ -77,7 +77,20 @@ export default {
           return await handleLegacyPolling(request, env, credential);
         }
         if (url.pathname === "/api/webhook/install" && request.method === "POST") {
-          return json(await installWebhook(env, url.origin, credential));
+          const clientId = url.searchParams.get("client") || "";
+          if (clientId && !/^[A-Za-z0-9_-]{8,128}$/.test(clientId)) {
+            return telegramError(400, "Invalid client id");
+          }
+          return json(await installWebhook(
+            env,
+            url.origin,
+            credential,
+            {
+              catchUp: url.searchParams.get("catch_up") === "1",
+              dropPendingUpdates: url.searchParams.get("drop_pending_updates") === "1",
+            },
+            clientId
+          ));
         }
         if (url.pathname === "/api/webhook/release" && request.method === "POST") {
           return json(await releaseWebhook(env, url.origin, credential, url.searchParams.get("client") || ""));
@@ -112,6 +125,11 @@ async function handleState(env: Env, credential: BotCredential): Promise<Respons
     ? webhook.response.result
     : null;
   const webhookUrl = typeof webhookInfo?.url === "string" ? webhookInfo.url : "";
+  const pendingUpdates = typeof webhookInfo?.pending_update_count === "number"
+    && Number.isSafeInteger(webhookInfo.pending_update_count)
+    && webhookInfo.pending_update_count > 0
+    ? webhookInfo.pending_update_count
+    : 0;
   const webhookError = typeof webhookInfo?.last_error_message === "string"
     ? webhookInfo.last_error_message
     : webhook.response.ok
@@ -131,6 +149,7 @@ async function handleState(env: Env, credential: BotCredential): Promise<Respons
         : identity.response.description || "Unable to load bot identity",
       lastPollAt: null,
       updatesSeen: 0,
+      pendingUpdates,
     },
     log: [],
   };
@@ -214,19 +233,41 @@ async function handleTelegramWebhook(
 async function installWebhook(
   env: Env,
   origin: string,
-  credential: BotCredential
+  credential: BotCredential,
+  options: {
+    catchUp?: boolean;
+    dropPendingUpdates?: boolean;
+  } = {},
+  clientId = ""
 ): Promise<TelegramResponse> {
+  const hub = getHub(env, credential.hubKey);
+  if (!options.dropPendingUpdates) {
+    const activated = await hub.setClientActive(clientId, true);
+    if (clientId && !activated) {
+      return {
+        ok: false,
+        error_code: 409,
+        description: "The dashboard disconnected before Telegram updates could start",
+      };
+    }
+  }
   const secret = randomWebhookSecret();
   const secretDigest = await webhookSecretDigest(secret);
   const params: TelegramParams = {
     url: `${origin}/telegram/webhook/${credential.hubKey}/${secretDigest}`,
     secret_token: secret,
     allowed_updates: ALL_UPDATE_TYPES,
-    drop_pending_updates: false,
-    max_connections: 40,
+    drop_pending_updates: options.dropPendingUpdates === true,
+    // A smaller pool prevents a large Telegram backlog from overwhelming the
+    // browser. A later clean session restores the normal connection count.
+    max_connections: options.catchUp ? 4 : 40,
   };
   const call = await callTelegramJson(env, credential.token, "setWebhook", params);
-  const hub = getHub(env, credential.hubKey);
+  if (options.dropPendingUpdates && call.response.ok) {
+    await hub.setClientActive(clientId, true);
+  } else if (!call.response.ok && clientId) {
+    await hub.setClientActive(clientId, false);
+  }
   await hub.recordTelegramCallJson("setWebhook", encodeJson(params), encodeJson(call.response), call.elapsedMs);
   await hub.setWebhookState(call.response.ok, call.response.ok ? null : call.response.description || "setWebhook failed");
   return call.response;

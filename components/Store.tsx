@@ -68,15 +68,24 @@ const EMPTY: State = {
   messages: {},
   queries: [],
   rawUpdates: [],
-  polling: { running: false, offset: null, lastError: null, lastPollAt: null, updatesSeen: 0 },
+  polling: {
+    running: false,
+    offset: null,
+    lastError: null,
+    lastPollAt: null,
+    updatesSeen: 0,
+    pendingUpdates: 0,
+  },
   log: [],
   connected: false,
 };
 
 type Action =
   | { type: "event"; event: StreamEvent }
+  | { type: "events"; events: StreamEvent[] }
   | { type: "hydrate"; saved: AppSnapshot | null; fresh: AppSnapshot }
   | { type: "connected"; value: boolean }
+  | { type: "pending_updates"; value: number }
   | { type: "local_read"; chatId: string }
   | { type: "reset" };
 
@@ -84,6 +93,12 @@ export type AuthStatus = "checking" | "required" | "authenticated";
 
 function messageKey(message: StoredMessage): string {
   return message._key || `m:${message.message_id}`;
+}
+
+function flattenStreamEvent(event: StreamEvent): StreamEvent[] {
+  return event.type === "batch"
+    ? event.events.flatMap(flattenStreamEvent)
+    : [event];
 }
 
 function upsertChat(chats: ChatEntry[], chat: ChatEntry): ChatEntry[] {
@@ -112,6 +127,18 @@ function reducer(state: State, action: Action): State {
     case "connected":
       return { ...state, connected: action.value };
 
+    case "pending_updates":
+      return {
+        ...state,
+        polling: { ...state.polling, pendingUpdates: Math.max(0, action.value) },
+      };
+
+    case "events":
+      return action.events.reduce(
+        (current, event) => reducer(current, { type: "event", event }),
+        state
+      );
+
     case "hydrate": {
       const restored = action.saved || action.fresh;
       return {
@@ -123,6 +150,7 @@ function reducer(state: State, action: Action): State {
               running: action.fresh.polling.running,
               lastError: action.fresh.polling.lastError,
               offset: null,
+              pendingUpdates: action.fresh.polling.pendingUpdates,
             }
           : action.fresh.polling,
         connected: state.connected,
@@ -142,11 +170,22 @@ function reducer(state: State, action: Action): State {
         case "ready":
           return { ...state, connected: true };
 
+        case "batch":
+          return e.events.reduce(
+            (current, event) => reducer(current, { type: "event", event }),
+            state
+          );
+
         case "clear":
           return {
             ...EMPTY,
             me: state.me,
-            polling: { ...state.polling, lastPollAt: null, updatesSeen: 0 },
+            polling: {
+              ...state.polling,
+              lastPollAt: null,
+              updatesSeen: 0,
+              pendingUpdates: 0,
+            },
             connected: state.connected,
           };
 
@@ -259,6 +298,7 @@ function reducer(state: State, action: Action): State {
               ...e.polling,
               lastPollAt: state.polling.lastPollAt,
               updatesSeen: state.polling.updatesSeen,
+              pendingUpdates: state.polling.pendingUpdates,
             },
           };
 
@@ -275,6 +315,7 @@ function reducer(state: State, action: Action): State {
               lastError: null,
               lastPollAt: Date.now(),
               updatesSeen: state.polling.updatesSeen + 1,
+              pendingUpdates: Math.max(0, state.polling.pendingUpdates - 1),
             },
           };
 
@@ -292,6 +333,12 @@ export interface Toast {
   id: number;
   text: string;
   kind: "ok" | "err";
+}
+
+export interface BacklogState {
+  initial: number;
+  remaining: number;
+  status: "waiting" | "catching-up" | "dropping";
 }
 
 interface Ctx {
@@ -326,6 +373,9 @@ interface Ctx {
   logout: () => Promise<void>;
   browserStorage: "loading" | "ready" | "memory-only";
   clearBrowserHistory: () => Promise<boolean>;
+  backlog: BacklogState | null;
+  continueBacklog: () => void;
+  dropBacklog: () => void;
   avatarFileIds: Record<string, string | null>;
   ensureAvatar: (id: number | string, kind: "user" | "chat") => void;
   refreshAvatar: (id: number | string, kind: "user" | "chat") => Promise<void>;
@@ -381,11 +431,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [theme, setThemeState] = useState<"light" | "dark">("dark");
   const [authStatus, setAuthStatus] = useState<AuthStatus>("checking");
+  const [authSession, setAuthSession] = useState(0);
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
   const [botAccounts, setBotAccounts] = useState<BotAccountSummary[]>([]);
   const [avatarFileIds, setAvatarFileIds] = useState<Record<string, string | null>>({});
   const [browserStorage, setBrowserStorage] = useState<"loading" | "ready" | "memory-only">("loading");
+  const [backlog, setBacklog] = useState<BacklogState | null>(null);
   const [activeBotId, setActiveBotId] = useState<string | null>(null);
   const [stickerLibrary, setStickerLibrary] = useState<StickerLibrary>(() => emptyStickerLibrary(""));
   const [customEmojiStickers, setCustomEmojiStickers] = useState<Record<string, TgAny>>({});
@@ -398,10 +450,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const activeBotIdRef = useRef<string | null>(null);
   const selectedChatIdRef = useRef<string | null>(null);
   const hydratedRef = useRef(false);
-  const pendingEvents = useRef<StreamEvent[]>([]);
+  const pendingEvents = useRef<StreamEvent[][]>([]);
+  const seenUpdateIds = useRef(new Set<number>());
+  const seenUpdateOrder = useRef<number[]>([]);
+  const webhookDecision = useRef<(dropPendingUpdates: boolean) => void>(() => undefined);
   const latestStoredDashboard = useRef<StoredDashboard | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveIdleCallback = useRef<number | null>(null);
+  const saveBurstStartedAt = useRef<number | null>(null);
   const stickerLibraryRef = useRef<StickerLibrary>(stickerLibrary);
   const latestStoredStickerLibrary = useRef<StickerLibrary | null>(null);
   const stickerSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -427,6 +483,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       }
       saveIdleCallback.current = null;
     }
+    saveBurstStartedAt.current = null;
   }, []);
 
   const requireLogin = useCallback(() => {
@@ -535,6 +592,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       rememberBotAccount(normalized, body.me);
       saveBotToken(normalized);
       setBotAccounts(savedBotAccounts());
+      setAuthSession((session) => session + 1);
       setAuthStatus("authenticated");
       return true;
     } catch (error) {
@@ -697,6 +755,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     if (customEmojiTimer.current) clearTimeout(customEmojiTimer.current);
   }, []);
 
+  const continueBacklog = useCallback(() => {
+    webhookDecision.current(false);
+  }, []);
+
+  const dropBacklog = useCallback(() => {
+    webhookDecision.current(true);
+  }, []);
+
   const logout = useCallback(async () => {
     const clientId = streamClientId.current;
     if (clientId) {
@@ -724,6 +790,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     hydratedRef.current = false;
     activeBotIdRef.current = null;
     pendingEvents.current = [];
+    seenUpdateIds.current.clear();
+    seenUpdateOrder.current = [];
+    webhookDecision.current = () => undefined;
+    setBacklog(null);
     stickerSetRequests.current.clear();
     setActiveBotId(null);
     dispatch({ type: "reset" });
@@ -748,41 +818,35 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   // ------------------------------------------------------------- stream
   useEffect(() => {
     if (authStatus !== "authenticated") return;
+    const BACKLOG_CONFIRM_THRESHOLD = 50;
+    const MAX_SEEN_UPDATE_IDS = 2_048;
+    const WIRE_BATCH_MS = 32;
     let closed = false;
     let socket: WebSocket | null = null;
+    let socketOpen = false;
+    let stateReady = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let wireBatchTimer: ReturnType<typeof setTimeout> | undefined;
+    let backlogStatusTimer: ReturnType<typeof setTimeout> | undefined;
     let retryMs = 250;
     let webhookInstallInFlight = false;
     let webhookInstalled = false;
+    let backlogDecisionRequired = false;
+    let initialPendingUpdates = 0;
+    let backlogUpdatesDelivered = 0;
+    let catchingUp = false;
+    let wireEventGroups: StreamEvent[][] = [];
     const clientId = crypto.randomUUID();
+    const sessionToken = currentBotToken();
     streamClientId.current = clientId;
     const releaseUrl = `/api/webhook/release?client=${encodeURIComponent(clientId)}`;
-
-    const ensureWebhook = () => {
-      if (webhookInstalled || webhookInstallInFlight) return;
-      webhookInstallInFlight = true;
-      void botFetch("/api/webhook/install", { method: "POST", cache: "no-store" })
-        .then(async (response) => {
-          const result = (await response.json()) as TgResult;
-          webhookInstalled = Boolean(response.ok && result.ok);
-          if (response.status === 401) requireLogin();
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          webhookInstallInFlight = false;
-        });
-    };
-
-    const releaseOnPageHide = () => {
-      webhookInstalled = false;
-      navigator.sendBeacon?.(releaseUrl);
-    };
-    window.addEventListener("pagehide", releaseOnPageHide);
-    window.addEventListener("pageshow", ensureWebhook);
 
     hydratedRef.current = false;
     activeBotIdRef.current = null;
     pendingEvents.current = [];
+    seenUpdateIds.current.clear();
+    seenUpdateOrder.current = [];
+    setBacklog(null);
     setActiveBotId(null);
     setBotChatMemberState(null);
     setBrowserStorage(browserStorageAvailable() ? "loading" : "memory-only");
@@ -800,6 +864,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       cancelPendingStickerSave();
       latestStoredDashboard.current = null;
       latestStoredStickerLibrary.current = null;
+      seenUpdateIds.current.clear();
+      seenUpdateOrder.current = [];
+      setBacklog(null);
       void clearDashboard(botId).catch(warnBrowserStorage);
       void clearStickerLibrary(botId).catch(warnBrowserStorage);
       const empty = emptyStickerLibrary(botId);
@@ -848,52 +915,265 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
-    const deliverEvent = (streamEvent: StreamEvent) => {
-      if (streamEvent.type === "ready") {
-        dispatch({ type: "event", event: streamEvent });
-        return;
+    const rememberUpdateGroup = (events: StreamEvent[]): StreamEvent[] => {
+      const raw = events.find((event) => event.type === "raw");
+      if (!raw || raw.type !== "raw" || !Number.isSafeInteger(raw.update.update_id)) return events;
+      const updateId = raw.update.update_id;
+      if (seenUpdateIds.current.has(updateId)) return [];
+      seenUpdateIds.current.add(updateId);
+      seenUpdateOrder.current.push(updateId);
+      while (seenUpdateOrder.current.length > MAX_SEEN_UPDATE_IDS) {
+        const expired = seenUpdateOrder.current.shift();
+        if (expired != null) seenUpdateIds.current.delete(expired);
       }
+      return events;
+    };
+
+    const deliverEventGroups = (groups: StreamEvent[][]) => {
+      if (!groups.length) return;
       if (!hydratedRef.current) {
-        pendingEvents.current.push(streamEvent);
+        pendingEvents.current.push(...groups);
         return;
       }
-      applyEventSideEffects(streamEvent);
-      dispatch({ type: "event", event: streamEvent });
-      if (streamEvent.type === "clear" && activeBotIdRef.current) {
+
+      const deliverable: StreamEvent[] = [];
+      for (const group of groups) {
+        const events = rememberUpdateGroup(group);
+        if (!events.length) continue;
+        deliverable.push(...events);
+      }
+      if (!deliverable.length) return;
+
+      for (const event of deliverable) applyEventSideEffects(event);
+      dispatch({ type: "events", events: deliverable });
+
+      const rawCount = deliverable.reduce(
+        (count, event) => count + (event.type === "raw" ? 1 : 0),
+        0
+      );
+      if (rawCount) {
+        if (catchingUp) {
+          backlogUpdatesDelivered += rawCount;
+          if (backlogUpdatesDelivered >= initialPendingUpdates) {
+            catchingUp = false;
+            initialPendingUpdates = 0;
+          }
+        }
+        setBacklog((current) => {
+          if (!current || current.status !== "catching-up") return current;
+          const remaining = Math.max(0, current.remaining - rawCount);
+          return remaining ? { ...current, remaining } : null;
+        });
+      }
+      if (deliverable.some((event) => event.type === "clear") && activeBotIdRef.current) {
         clearPersistedState(activeBotIdRef.current);
       }
     };
+
+    const flushWireEvents = () => {
+      if (wireBatchTimer) {
+        clearTimeout(wireBatchTimer);
+        wireBatchTimer = undefined;
+      }
+      const groups = wireEventGroups;
+      wireEventGroups = [];
+      deliverEventGroups(groups);
+    };
+
+    const queueFrame = (frame: StreamEvent) => {
+      if (frame.type === "ready") {
+        dispatch({ type: "event", event: frame });
+        return;
+      }
+      wireEventGroups.push(flattenStreamEvent(frame));
+      if (!wireBatchTimer) wireBatchTimer = setTimeout(flushWireEvents, WIRE_BATCH_MS);
+    };
+
+    const scheduleBacklogStatusCheck = () => {
+      if (closed || !catchingUp || initialPendingUpdates <= 0 || backlogStatusTimer) return;
+      backlogStatusTimer = setTimeout(() => {
+        backlogStatusTimer = undefined;
+        void botFetch("/api/state", { cache: "no-store" }, sessionToken)
+          .then(async (response) => {
+            if (closed) return;
+            if (response.status === 401) {
+              requireLogin();
+              return;
+            }
+            if (!response.ok) {
+              scheduleBacklogStatusCheck();
+              return;
+            }
+            const latest = (await response.json()) as AppSnapshot;
+            if (closed) return;
+            const pending = Math.max(0, latest.polling.pendingUpdates || 0);
+            if (pending === 0) {
+              catchingUp = false;
+              initialPendingUpdates = 0;
+            }
+            dispatch({ type: "pending_updates", value: pending });
+            setBacklog((current) => {
+              if (!current || current.status !== "catching-up") return current;
+              if (pending === 0) return null;
+              return { ...current, remaining: Math.min(current.remaining, pending) };
+            });
+            if (catchingUp && pending > 0) scheduleBacklogStatusCheck();
+          })
+          .catch(() => {
+            if (!closed) scheduleBacklogStatusCheck();
+          });
+      }, 1_500);
+    };
+
+    const installWebhook = (options: {
+      approved?: boolean;
+      catchUp?: boolean;
+      dropPendingUpdates?: boolean;
+    } = {}) => {
+      if (!stateReady || !socketOpen || webhookInstalled || webhookInstallInFlight) return;
+      if (backlogDecisionRequired && !options.approved) return;
+      const query = new URLSearchParams({ client: clientId });
+      if (options.catchUp) query.set("catch_up", "1");
+      if (options.dropPendingUpdates) query.set("drop_pending_updates", "1");
+      const suffix = query.size ? `?${query}` : "";
+      webhookInstallInFlight = true;
+      void botFetch(
+        `/api/webhook/install${suffix}`,
+        { method: "POST", cache: "no-store" },
+        sessionToken
+      )
+        .then(async (response) => {
+          const result = (await response.json()) as TgResult;
+          if (closed) {
+            if (response.ok && result.ok) {
+              void botFetch(releaseUrl, {
+                method: "POST",
+                cache: "no-store",
+              }, sessionToken).catch(() => undefined);
+            }
+            return;
+          }
+          webhookInstalled = Boolean(response.ok && result.ok);
+          if (response.status === 401) requireLogin();
+          if (!webhookInstalled) {
+            catchingUp = false;
+            if (initialPendingUpdates > 0) {
+              backlogDecisionRequired = true;
+              setBacklog({
+                initial: initialPendingUpdates,
+                remaining: initialPendingUpdates,
+                status: "waiting",
+              });
+            }
+            notify(result.description || "Could not start Telegram updates", "err");
+            return;
+          }
+          backlogDecisionRequired = false;
+          if (options.dropPendingUpdates) {
+            catchingUp = false;
+            initialPendingUpdates = 0;
+            dispatch({ type: "pending_updates", value: 0 });
+            setBacklog(null);
+            notify("Queued Telegram updates were discarded", "ok");
+          } else if (initialPendingUpdates > 0) {
+            scheduleBacklogStatusCheck();
+          }
+        })
+        .catch(() => {
+          if (closed) return;
+          webhookInstalled = false;
+          catchingUp = false;
+          if (initialPendingUpdates > 0) {
+            backlogDecisionRequired = true;
+            setBacklog({
+              initial: initialPendingUpdates,
+              remaining: initialPendingUpdates,
+              status: "waiting",
+            });
+          }
+          notify("Could not start Telegram updates", "err");
+        })
+        .finally(() => {
+          webhookInstallInFlight = false;
+        });
+    };
+
+    const ensureWebhook = () => {
+      installWebhook({ catchUp: initialPendingUpdates > 0 });
+    };
+
+    webhookDecision.current = (dropPendingUpdates) => {
+      if (closed) return;
+      backlogDecisionRequired = false;
+      backlogUpdatesDelivered = 0;
+      catchingUp = !dropPendingUpdates;
+      setBacklog((current) => current
+        ? { ...current, status: dropPendingUpdates ? "dropping" : "catching-up" }
+        : null
+      );
+      installWebhook({
+        approved: true,
+        catchUp: !dropPendingUpdates,
+        dropPendingUpdates,
+      });
+    };
+
+    const releaseOnPageHide = () => {
+      flushWireEvents();
+      if (!webhookInstalled) return;
+      webhookInstalled = false;
+      navigator.sendBeacon?.(releaseUrl);
+    };
+
+    const restoreOnPageShow = () => {
+      webhookInstalled = false;
+      ensureWebhook();
+    };
+    window.addEventListener("pagehide", releaseOnPageHide);
+    window.addEventListener("pageshow", restoreOnPageShow);
 
     const connect = () => {
       if (closed) return;
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       socket = new WebSocket(`${protocol}//${location.host}/api/ws?client=${encodeURIComponent(clientId)}`);
       socket.onmessage = (event) => {
+        if (closed) return;
         if (event.data === "pong") return;
         try {
-          deliverEvent(JSON.parse(String(event.data)) as StreamEvent);
+          queueFrame(JSON.parse(String(event.data)) as StreamEvent);
         } catch {
           /* ignore malformed frames */
         }
       };
       socket.onopen = () => {
+        if (closed) {
+          socket?.close(1000, "Session replaced");
+          return;
+        }
+        socketOpen = true;
         retryMs = 250;
         dispatch({ type: "connected", value: true });
         ensureWebhook();
       };
       socket.onclose = () => {
+        if (closed) return;
+        flushWireEvents();
         socket = null;
+        socketOpen = false;
+        webhookInstalled = false;
         dispatch({ type: "connected", value: false });
         if (!closed) {
           retryTimer = setTimeout(connect, retryMs);
           retryMs = Math.min(retryMs * 2, 5000);
         }
       };
-      socket.onerror = () => socket?.close();
+      socket.onerror = () => {
+        if (!closed) socket?.close();
+      };
     };
 
     connect();
-    void botFetch("/api/state", { cache: "no-store" })
+    void botFetch("/api/state", { cache: "no-store" }, sessionToken)
       .then(async (response) => {
         if (response.status === 401) {
           requireLogin();
@@ -902,10 +1182,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         if (!response.ok) return;
         const fresh = (await response.json()) as AppSnapshot;
         const botId = fresh.me?.id == null ? "" : String(fresh.me.id);
-        const token = currentBotToken();
-        if (fresh.me && token) {
+        if (fresh.me && sessionToken) {
           try {
-            rememberBotAccount(token, fresh.me);
+            rememberBotAccount(sessionToken, fresh.me);
             setBotAccounts(savedBotAccounts());
           } catch {
             // The active token remains usable even if the optional account list cannot be updated.
@@ -927,6 +1206,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }
         if (closed) return;
 
+        const restoredSnapshot = saved?.snapshot || fresh;
+        const restoredIds = saved?.seenUpdateIds?.length
+          ? saved.seenUpdateIds
+          : [...restoredSnapshot.rawUpdates]
+              .reverse()
+              .map((update) => update.update_id)
+              .filter((id) => Number.isSafeInteger(id));
+        seenUpdateOrder.current = [...new Set(restoredIds)].slice(-MAX_SEEN_UPDATE_IDS);
+        seenUpdateIds.current = new Set(seenUpdateOrder.current);
+
         dispatch({ type: "hydrate", saved: saved?.snapshot || null, fresh });
         setAvatarFileIds(saved?.avatarFileIds || {});
         avatarRequests.current = new Set(Object.keys(saved?.avatarFileIds || {}));
@@ -940,46 +1229,69 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         setActiveBotId(botId || null);
         const restoredStickers = ingestStickerSnapshot(
           savedStickers || emptyStickerLibrary(botId),
-          saved?.snapshot || fresh
+          restoredSnapshot
         );
         stickerLibraryRef.current = restoredStickers;
         setStickerLibrary(restoredStickers);
-        for (const list of Object.values((saved?.snapshot || fresh).messages)) {
+        for (const list of Object.values(restoredSnapshot.messages)) {
           for (const message of list) rememberCustomEmojisInMessage(message);
         }
-        for (const entry of (saved?.snapshot || fresh).chats) {
+        for (const entry of restoredSnapshot.chats) {
           for (const setName of [entry.chat.sticker_set_name, entry.chat.custom_emoji_sticker_set_name]) {
             if (typeof setName === "string" && setName) requestStickerSet(setName);
           }
         }
         hydratedRef.current = true;
-        if (botId && storageWorked) {
-          setBrowserStorage("ready");
-        }
+        if (botId && storageWorked) setBrowserStorage("ready");
 
-        for (const queued of pendingEvents.current.splice(0)) {
-          applyEventSideEffects(queued);
-          dispatch({ type: "event", event: queued });
-          if (queued.type === "clear" && botId) clearPersistedState(botId);
-        }
+        initialPendingUpdates = Math.max(0, fresh.polling.pendingUpdates || 0);
+        backlogDecisionRequired = initialPendingUpdates > BACKLOG_CONFIRM_THRESHOLD;
+        backlogUpdatesDelivered = 0;
+        catchingUp = initialPendingUpdates > 0 && !backlogDecisionRequired;
+        setBacklog(initialPendingUpdates
+          ? {
+              initial: initialPendingUpdates,
+              remaining: initialPendingUpdates,
+              status: backlogDecisionRequired ? "waiting" : "catching-up",
+            }
+          : null
+        );
+        const queued = pendingEvents.current.splice(0);
+        deliverEventGroups(queued);
         for (const setName of Object.keys(stickerLibraryRef.current.sets)) {
           requestStickerSet(setName);
         }
+        stateReady = true;
+        ensureWebhook();
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!closed) notify("Could not load the bot dashboard", "err");
+      });
 
     return () => {
       closed = true;
+      webhookDecision.current = () => undefined;
       window.removeEventListener("pagehide", releaseOnPageHide);
-      window.removeEventListener("pageshow", ensureWebhook);
+      window.removeEventListener("pageshow", restoreOnPageShow);
       if (retryTimer) clearTimeout(retryTimer);
+      if (wireBatchTimer) clearTimeout(wireBatchTimer);
+      if (backlogStatusTimer) clearTimeout(backlogStatusTimer);
+      wireEventGroups = [];
       socket?.close(1000, "Page closed");
+      if (sessionToken) {
+        void botFetch(releaseUrl, {
+          method: "POST",
+          cache: "no-store",
+        }, sessionToken).catch(() => undefined);
+      }
       if (streamClientId.current === clientId) streamClientId.current = "";
     };
   }, [
+    authSession,
     authStatus,
     cancelPendingSave,
     cancelPendingStickerSave,
+    notify,
     rememberStickerMessage,
     rememberCustomEmojisInMessage,
     observeCustomEmojis,
@@ -988,13 +1300,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     warnBrowserStorage,
   ]);
 
-  // Persist a bounded snapshot off the render path. Repeated live events update
-  // the in-memory UI immediately and collapse into at most one IndexedDB write
-  // per 250 ms.
+  // Persist a bounded snapshot off the render path. The trailing delay collapses
+  // an update burst into one IndexedDB clone/write, with a five-second maximum
+  // so a continuously busy chat is still checkpointed.
   useEffect(() => {
     if (!activeBotId || !hydratedRef.current || browserStorage === "memory-only") return;
     latestStoredDashboard.current = {
-      version: 1,
+      version: 2,
       botId: activeBotId,
       savedAt: Date.now(),
       snapshot: {
@@ -1010,22 +1322,41 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         Object.entries(avatarFileIds).filter((entry): entry is [string, string] => typeof entry[1] === "string")
       ),
       selectedChatId,
+      seenUpdateIds: seenUpdateOrder.current.slice(-2_048),
     };
-    if (saveTimer.current || saveIdleCallback.current != null) return;
+
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (saveIdleCallback.current != null) {
+      if (typeof window.cancelIdleCallback === "function") {
+        window.cancelIdleCallback(saveIdleCallback.current);
+      }
+      saveIdleCallback.current = null;
+    }
+    const now = Date.now();
+    saveBurstStartedAt.current ??= now;
+
+    const persistLatest = () => {
+      saveTimer.current = null;
+      saveIdleCallback.current = null;
+      saveBurstStartedAt.current = null;
+      const record = latestStoredDashboard.current;
+      if (!record || record.botId !== activeBotIdRef.current) return;
+      void saveDashboard(record).catch(warnBrowserStorage);
+    };
+
+    if (now - saveBurstStartedAt.current >= 5_000) {
+      persistLatest();
+      return;
+    }
+
     saveTimer.current = setTimeout(() => {
       saveTimer.current = null;
-      const persistLatest = () => {
-        saveIdleCallback.current = null;
-        const record = latestStoredDashboard.current;
-        if (!record || record.botId !== activeBotIdRef.current) return;
-        void saveDashboard(record).catch(warnBrowserStorage);
-      };
       if (typeof window.requestIdleCallback === "function") {
         saveIdleCallback.current = window.requestIdleCallback(persistLatest, { timeout: 750 });
       } else {
         persistLatest();
       }
-    }, 250);
+    }, 750);
   }, [activeBotId, avatarFileIds, browserStorage, selectedChatId, state, warnBrowserStorage]);
 
   useEffect(() => {
@@ -1077,6 +1408,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     cancelPendingStickerSave();
     latestStoredDashboard.current = null;
     latestStoredStickerLibrary.current = null;
+    seenUpdateIds.current.clear();
+    seenUpdateOrder.current = [];
     if (botId && browserStorageAvailable()) {
       try {
         await Promise.all([clearDashboard(botId), clearStickerLibrary(botId)]);
@@ -1222,7 +1555,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     ? botChatMemberState.member
     : undefined;
 
-  const value: Ctx = {
+  const value = useMemo<Ctx>(() => ({
     state,
     selectedChatId,
     selectChat,
@@ -1248,6 +1581,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     logout,
     browserStorage,
     clearBrowserHistory,
+    backlog,
+    continueBacklog,
+    dropBacklog,
     avatarFileIds,
     ensureAvatar,
     refreshAvatar,
@@ -1258,7 +1594,44 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     ensureCustomEmojis,
     setLocalBotReaction,
     botChatMember,
-  };
+  }), [
+    state,
+    selectedChatId,
+    selectChat,
+    chat,
+    messages,
+    replyTo,
+    editing,
+    toasts,
+    notify,
+    call,
+    upload,
+    theme,
+    setTheme,
+    authStatus,
+    authBusy,
+    authError,
+    login,
+    botAccounts,
+    switchAccount,
+    forgetAccount,
+    logout,
+    browserStorage,
+    clearBrowserHistory,
+    backlog,
+    continueBacklog,
+    dropBacklog,
+    avatarFileIds,
+    ensureAvatar,
+    refreshAvatar,
+    stickerLibrary,
+    rememberStickerSet,
+    refreshStickerSet,
+    customEmojiStickers,
+    ensureCustomEmojis,
+    setLocalBotReaction,
+    botChatMember,
+  ]);
 
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>;
 }

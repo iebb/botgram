@@ -1,13 +1,13 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useStore } from "./Store";
 import { Field, Select, TextInput, Toggle, useOutsideClick } from "./UI";
 import KeyboardBuilder, { buildReplyMarkup, emptyKb, type KbDraft } from "./KeyboardBuilder";
-import AttachModal, { type AttachKind } from "./SendMedia";
+import type { AttachKind } from "./SendMedia";
 import { messagePreview } from "@/lib/format";
 import type { TgAny } from "@/lib/types";
-import StickerSelector from "./StickerSelector";
 import { attachmentKindForFiles } from "@/lib/media";
 import { buildPlainTextRichMessage, buildPlainTextThinkingDraft } from "@/lib/rich";
 import {
@@ -33,6 +33,9 @@ import {
   IconSticker,
   IconVideo,
 } from "./Icons";
+
+const AttachModal = dynamic(() => import("./SendMedia"));
+const StickerSelector = dynamic(() => import("./StickerSelector"));
 
 const EMOJI = [
   "😀","😂","🥰","😍","🤔","😅","😭","😡","👍","👎","🙏","👏","🔥","❤️","🎉","✨",

@@ -44,7 +44,14 @@ describe("browser-local sticker library", () => {
       messages: { "-100707": [message] },
       queries: [],
       rawUpdates: [],
-      polling: { running: true, offset: null, lastError: null, lastPollAt: null, updatesSeen: 0 },
+      polling: {
+        running: true,
+        offset: null,
+        lastError: null,
+        lastPollAt: null,
+        updatesSeen: 0,
+        pendingUpdates: 0,
+      },
       log: [],
     });
 

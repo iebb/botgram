@@ -7,7 +7,7 @@ import type { TgAny } from "@/lib/types";
 
 const MAX_TGS_CACHE_ENTRIES = 72;
 const tgsCache = new Map<string, Promise<TgAny>>();
-const visibilityCallbacks = new WeakMap<Element, () => void>();
+const visibilityCallbacks = new WeakMap<Element, (visible: boolean) => void>();
 let stickerVisibilityObserver: IntersectionObserver | null = null;
 
 interface StickerMediaProps {
@@ -28,20 +28,23 @@ function StickerMedia({
   const accessibleLabel = label || sticker.emoji || "Sticker";
 
   useEffect(() => {
-    if (eager || visible) return;
+    if (eager) {
+      setVisible(true);
+      return;
+    }
     const node = host.current;
     if (!node || typeof IntersectionObserver === "undefined") {
       setVisible(true);
       return;
     }
     const observer = sharedStickerObserver();
-    visibilityCallbacks.set(node, () => setVisible(true));
+    visibilityCallbacks.set(node, setVisible);
     observer.observe(node);
     return () => {
       observer.unobserve(node);
       visibilityCallbacks.delete(node);
     };
-  }, [eager, visible]);
+  }, [eager]);
 
   return (
     <span
@@ -197,12 +200,9 @@ function loadTgs(fileId: string): Promise<TgAny> {
 function sharedStickerObserver(): IntersectionObserver {
   if (stickerVisibilityObserver) return stickerVisibilityObserver;
   stickerVisibilityObserver = new IntersectionObserver(
-    (entries, observer) => {
+    (entries) => {
       for (const entry of entries) {
-        if (!entry.isIntersecting) continue;
-        visibilityCallbacks.get(entry.target)?.();
-        visibilityCallbacks.delete(entry.target);
-        observer.unobserve(entry.target);
+        visibilityCallbacks.get(entry.target)?.(entry.isIntersecting);
       }
     },
     { rootMargin: "180px" }

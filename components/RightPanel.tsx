@@ -1,14 +1,7 @@
 "use client";
 
 import React from "react";
-import InfoPanel from "./panels/InfoPanel";
-import ActionsPanel from "./panels/ActionsPanel";
-import AdminPanel from "./panels/AdminPanel";
-import BotPanel from "./panels/BotPanel";
-import UpdatesPanel from "./panels/UpdatesPanel";
-import WebhookPanel from "./panels/WebhookPanel";
-import StickersPanel from "./panels/StickersPanel";
-import ConsolePanel from "./panels/ConsolePanel";
+import dynamic from "next/dynamic";
 import {
   IconBolt,
   IconBot,
@@ -22,6 +15,15 @@ import {
 } from "./Icons";
 import { useStore } from "./Store";
 import { isBotAdministrator } from "@/lib/chatPermissions";
+
+const InfoPanel = dynamic(() => import("./panels/InfoPanel"));
+const ActionsPanel = dynamic(() => import("./panels/ActionsPanel"));
+const AdminPanel = dynamic(() => import("./panels/AdminPanel"));
+const BotPanel = dynamic(() => import("./panels/BotPanel"));
+const UpdatesPanel = dynamic(() => import("./panels/UpdatesPanel"));
+const WebhookPanel = dynamic(() => import("./panels/WebhookPanel"));
+const StickersPanel = dynamic(() => import("./panels/StickersPanel"));
+const ConsolePanel = dynamic(() => import("./panels/ConsolePanel"));
 
 const TABS = [
   { id: "info", label: "Info", Icon: IconInfo },

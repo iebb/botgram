@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import dynamic from "next/dynamic";
 import { useStore } from "./Store";
 import MessageList from "./MessageList";
 import Composer from "./Composer";
@@ -34,8 +35,9 @@ import {
   IconUsers,
 } from "./Icons";
 import CustomEmoji from "./CustomEmoji";
-import CustomReactionSelector from "./CustomReactionSelector";
 import { reactionType, STANDARD_REACTION_EMOJI } from "@/lib/reactions";
+
+const CustomReactionSelector = dynamic(() => import("./CustomReactionSelector"));
 
 export default function ChatPane({
   onOpenPanel,

@@ -78,6 +78,11 @@ the last client removes Humanoid's own endpoint with `drop_pending_updates: fals
 on a normal close or account switch. Multiple tabs keep it alive. If a browser
 crashes before releasing the lease, the endpoint returns a retryable response while
 no dashboard is connected so Telegram does not receive a false acknowledgement.
+When Telegram reports more than 50 queued updates at launch, Humanoid pauses before
+installing the webhook and asks whether to catch up or start fresh. Catch-up keeps
+the queue and temporarily lowers webhook concurrency; start fresh requires a second
+confirmation because Telegram's `drop_pending_updates` operation is irreversible.
+Humanoid never discards a queue merely because the dashboard was closed.
 
 IndexedDB is not a Bot API history source. This dashboard only saves updates that
 reach an open browser and Message results from its own API calls. With the
@@ -156,9 +161,7 @@ enter it only in the deployed browser, where Botgram keeps it in localStorage.
 
 ```bash
 npm install
-npm test
-npm run typecheck
-npm run build
+npm run check
 npx wrangler deploy --dry-run
 CLOUDFLARE_ACCOUNT_ID=<your-account-id> npx wrangler deploy
 HUMANOID_URL=https://<deployment> npm run verify:live

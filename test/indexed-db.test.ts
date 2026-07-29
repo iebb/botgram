@@ -41,7 +41,14 @@ const snapshot: AppSnapshot = {
   },
   queries: [],
   rawUpdates: [{ update_id: 100, message: { text: "IndexedDB survives reloads" } }],
-  polling: { running: true, offset: null, lastError: null, lastPollAt: 1_722_222_222_000, updatesSeen: 1 },
+  polling: {
+    running: true,
+    offset: null,
+    lastError: null,
+    lastPollAt: 1_722_222_222_000,
+    updatesSeen: 1,
+    pendingUpdates: 0,
+  },
   log: [],
 };
 
@@ -58,12 +65,13 @@ afterAll(async () => {
 describe("browser IndexedDB state", () => {
   it("round-trips a per-bot dashboard without losing Telegram payloads", async () => {
     await saveDashboard({
-      version: 1,
+      version: 2,
       botId: BOT_ID,
       savedAt: 1_722_222_223_000,
       snapshot,
       avatarFileIds: { "user:707": "avatar-file-id" },
       selectedChatId: CHAT_ID,
+      seenUpdateIds: [98, 99, 100],
     });
 
     await expect(loadDashboard(BOT_ID)).resolves.toMatchObject({
@@ -74,6 +82,7 @@ describe("browser IndexedDB state", () => {
       },
       avatarFileIds: { "user:707": "avatar-file-id" },
       selectedChatId: CHAT_ID,
+      seenUpdateIds: [98, 99, 100],
     });
     await expect(loadDashboard("different-bot")).resolves.toBeNull();
   });

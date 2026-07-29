@@ -105,7 +105,7 @@ export default function AttachModal({
   initialParseMode?: string;
   onSent?: () => void;
 }) {
-  const { call, upload, notify } = useStore();
+  const { call, upload, notify, chat } = useStore();
   const [busy, setBusy] = useState(false);
 
   // shared media source state
@@ -198,21 +198,123 @@ export default function AttachModal({
           if (parseMode !== "none") params.parse_mode = parseMode;
         }
       } else if (kind === "poll") {
-        params.question = extra.question;
-        params.options = String(extra.options || "")
-          .split("\n")
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .map((text) => ({ text }));
+        const question = String(extra.question || "").trim();
+        const questionLength = Array.from(question).length;
+        if (questionLength < 1 || questionLength > 300) {
+          return notify("The poll question must contain 1–300 characters", "err");
+        }
+        let options: TgAny[];
+        try {
+          options = String(extra.options_json || "").trim()
+            ? JSON.parse(String(extra.options_json))
+            : String(extra.options || "")
+                .split("\n")
+                .map((text) => text.trim())
+                .filter(Boolean)
+                .map((text) => ({ text }));
+        } catch {
+          return notify("Advanced poll options must be a valid JSON array", "err");
+        }
+        if (!Array.isArray(options) || options.length < 1 || options.length > 12) {
+          return notify("A poll needs 1–12 options", "err");
+        }
+        if (options.some((option) => {
+          if (!option || typeof option !== "object" || Array.isArray(option)) return true;
+          if (typeof option.text !== "string") return true;
+          const length = Array.from(option.text).length;
+          return length < 1 || length > 100;
+        })) {
+          return notify("Every poll option must contain 1–100 characters", "err");
+        }
+        const countryCodes = String(extra.country_codes || "")
+          .toUpperCase()
+          .split(/[\s,]+/)
+          .filter(Boolean);
+        if (countryCodes.length > 12 || countryCodes.some((code) => !/^[A-Z]{2}$/.test(code))) {
+          return notify("Country codes must contain at most 12 two-letter codes", "err");
+        }
+        let media: TgAny | undefined;
+        let explanationMedia: TgAny | undefined;
+        try {
+          media = String(extra.media_json || "").trim()
+            ? JSON.parse(String(extra.media_json))
+            : undefined;
+          explanationMedia = String(extra.explanation_media_json || "").trim()
+            ? JSON.parse(String(extra.explanation_media_json))
+            : undefined;
+        } catch {
+          return notify("Poll media must be valid InputPollMedia JSON", "err");
+        }
+        if (
+          [media, explanationMedia].some(
+            (value) => value !== undefined && (!value || typeof value !== "object" || Array.isArray(value))
+          )
+        ) {
+          return notify("Poll media must be a JSON object", "err");
+        }
+        if (Array.from(String(extra.description || "")).length > 1_024) {
+          return notify("The poll description can contain at most 1,024 characters", "err");
+        }
+        if (Array.from(String(extra.explanation || "")).length > 200) {
+          return notify("The quiz explanation can contain at most 200 characters", "err");
+        }
+        const openPeriod = String(extra.open_period || "").trim();
+        const closeDate = String(extra.close_date || "").trim();
+        if (openPeriod && closeDate) {
+          return notify("Choose either an open period or a close date, not both", "err");
+        }
+        if (openPeriod) {
+          const seconds = Number(openPeriod);
+          if (!Number.isSafeInteger(seconds) || seconds < 5 || seconds > 2_628_000) {
+            return notify("Open period must be 5–2,628,000 seconds", "err");
+          }
+        }
+        if (closeDate) {
+          const timestamp = Number(closeDate);
+          const secondsFromNow = timestamp - Math.floor(Date.now() / 1_000);
+          if (!Number.isSafeInteger(timestamp) || secondsFromNow < 5 || secondsFromNow > 2_628_000) {
+            return notify("Close date must be 5–2,628,000 seconds in the future", "err");
+          }
+        }
+        const correctOptionTokens = String(extra.correct_option_ids || "0")
+          .split(/[\s,]+/)
+          .filter(Boolean);
+        const correctOptionIds = [...new Set(correctOptionTokens.map(Number))].sort((left, right) => left - right);
+        if (
+          extra.type === "quiz"
+          && (
+            !correctOptionIds.length
+            || correctOptionIds.some((id) => !Number.isSafeInteger(id) || id < 0 || id >= options.length)
+          )
+        ) {
+          return notify("Quiz answers must be valid option numbers", "err");
+        }
+        params.question = question;
+        params.options = options;
         params.is_anonymous = extra.is_anonymous;
         params.type = extra.type;
         params.allows_multiple_answers = extra.type === "regular" ? extra.multi : undefined;
-        params.correct_option_id =
-          extra.type === "quiz" ? Number(extra.correct_option_id) || 0 : undefined;
+        params.allows_revoting = Boolean(extra.allows_revoting);
+        params.shuffle_options = extra.shuffle_options || undefined;
+        params.allow_adding_options =
+          extra.type === "regular" && extra.is_anonymous === false
+            ? extra.allow_adding_options || undefined
+            : undefined;
+        params.hide_results_until_closes = extra.hide_results_until_closes || undefined;
+        params.members_only =
+          (chat?.chat.type === "channel" && extra.members_only) || undefined;
+        params.country_codes =
+          chat?.chat.type === "channel" && countryCodes.length ? countryCodes : undefined;
+        params.correct_option_ids = extra.type === "quiz" ? correctOptionIds : undefined;
         params.explanation = extra.type === "quiz" ? extra.explanation || undefined : undefined;
         params.explanation_parse_mode =
           extra.type === "quiz" && extra.explanation ? "MarkdownV2" : undefined;
-        params.open_period = extra.open_period ? Number(extra.open_period) : undefined;
+        params.explanation_media = extra.type === "quiz" ? explanationMedia : undefined;
+        params.description = extra.description || undefined;
+        params.description_parse_mode = extra.description ? "MarkdownV2" : undefined;
+        params.media = media;
+        params.open_period = openPeriod ? Number(openPeriod) : undefined;
+        params.close_date = closeDate ? Number(closeDate) : undefined;
         params.is_closed = extra.is_closed || undefined;
       } else if (kind === "checklist") {
         params.checklist = {
@@ -268,7 +370,7 @@ export default function AttachModal({
     <Modal
       title={TITLES[kind]}
       onClose={onClose}
-      wide={Boolean(file || files.length)}
+      wide={Boolean(file || files.length || kind === "poll")}
       footer={
         <>
           <button className="btn ghost" onClick={onClose}>
@@ -394,7 +496,7 @@ export default function AttachModal({
       )}
 
       {/* -------------------------------------------------- per-kind extras */}
-      <KindFields kind={kind} extra={extra} setX={setX} />
+      <KindFields kind={kind} extra={extra} setX={setX} chatType={chat?.chat.type} />
 
       {captionable(kind) && (
         <>
@@ -427,10 +529,12 @@ function KindFields({
   kind,
   extra,
   setX,
+  chatType,
 }: {
   kind: AttachKind;
   extra: TgAny;
   setX: (p: TgAny) => void;
+  chatType?: string;
 }) {
   switch (kind) {
     case "video":
@@ -600,8 +704,20 @@ function KindFields({
           <Field label="Question">
             <TextInput value={extra.question || ""} onChange={(e) => setX({ question: e.target.value })} />
           </Field>
-          <Field label="Options (one per line, 2–12)">
+          <Field label="Options (one per line, 1–12)">
             <TextArea value={extra.options || ""} onChange={(e) => setX({ options: e.target.value })} rows={4} />
+          </Field>
+          <Field
+            label="Advanced options JSON"
+            hint='Optional InputPollOption[]; use this for option media or custom emoji entities.'
+          >
+            <TextArea
+              className="mono"
+              value={extra.options_json || ""}
+              onChange={(e) => setX({ options_json: e.target.value })}
+              placeholder='[{"text":"Option","media":{"type":"link","url":"https://example.com"}}]'
+              rows={3}
+            />
           </Field>
           <Row>
             <Field label="Type">
@@ -614,22 +730,59 @@ function KindFields({
             <Field label="Open period (s)">
               <TextInput value={extra.open_period || ""} onChange={(e) => setX({ open_period: e.target.value })} />
             </Field>
+            <Field label="Close date (Unix time)">
+              <TextInput value={extra.close_date || ""} onChange={(e) => setX({ close_date: e.target.value })} />
+            </Field>
             {extra.type === "quiz" && (
-              <Field label="Correct option (0-based)">
+              <Field label="Correct options (0-based)">
                 <TextInput
-                  type="number"
-                  value={extra.correct_option_id ?? 0}
-                  onChange={(e) => setX({ correct_option_id: e.target.value })}
+                  value={extra.correct_option_ids ?? "0"}
+                  onChange={(e) => setX({ correct_option_ids: e.target.value })}
+                  placeholder="0, 2"
                 />
               </Field>
             )}
           </Row>
           {extra.type === "quiz" && (
-            <Field label="Explanation">
-              <TextArea
-                value={extra.explanation || ""}
-                onChange={(e) => setX({ explanation: e.target.value })}
-                rows={2}
+            <>
+              <Field label="Explanation">
+                <TextArea
+                  value={extra.explanation || ""}
+                  onChange={(e) => setX({ explanation: e.target.value })}
+                  rows={2}
+                />
+              </Field>
+              <Field label="Explanation media JSON" hint="Optional InputPollMedia object.">
+                <TextArea
+                  className="mono"
+                  value={extra.explanation_media_json || ""}
+                  onChange={(e) => setX({ explanation_media_json: e.target.value })}
+                  rows={2}
+                />
+              </Field>
+            </>
+          )}
+          <Field label="Description">
+            <TextArea
+              value={extra.description || ""}
+              onChange={(e) => setX({ description: e.target.value })}
+              rows={2}
+            />
+          </Field>
+          <Field label="Poll media JSON" hint="Optional InputPollMedia object for the description.">
+            <TextArea
+              className="mono"
+              value={extra.media_json || ""}
+              onChange={(e) => setX({ media_json: e.target.value })}
+              rows={2}
+            />
+          </Field>
+          {chatType === "channel" && (
+            <Field label="Country codes" hint="Comma-separated ISO codes, including FT.">
+              <TextInput
+                value={extra.country_codes || ""}
+                onChange={(e) => setX({ country_codes: e.target.value })}
+                placeholder="JP, US, FT"
               />
             </Field>
           )}
@@ -640,6 +793,35 @@ function KindFields({
           />
           {extra.type !== "quiz" && (
             <Toggle checked={!!extra.multi} onChange={(v) => setX({ multi: v })} label="Multiple answers" />
+          )}
+          <Toggle
+            checked={!!extra.allows_revoting}
+            onChange={(v) => setX({ allows_revoting: v })}
+            label="Allow revoting"
+          />
+          <Toggle
+            checked={!!extra.shuffle_options}
+            onChange={(v) => setX({ shuffle_options: v })}
+            label="Shuffle options"
+          />
+          {extra.type !== "quiz" && !extra.is_anonymous && (
+            <Toggle
+              checked={!!extra.allow_adding_options}
+              onChange={(v) => setX({ allow_adding_options: v })}
+              label="Allow participants to add options"
+            />
+          )}
+          <Toggle
+            checked={!!extra.hide_results_until_closes}
+            onChange={(v) => setX({ hide_results_until_closes: v })}
+            label="Hide results until the poll closes"
+          />
+          {chatType === "channel" && (
+            <Toggle
+              checked={!!extra.members_only}
+              onChange={(v) => setX({ members_only: v })}
+              label="Members for 24 hours only"
+            />
           )}
           <Toggle checked={!!extra.is_closed} onChange={(v) => setX({ is_closed: v })} label="Send already closed" />
         </>
@@ -757,7 +939,13 @@ function Row({ children }: { children: React.ReactNode }) {
 function defaultsFor(kind: AttachKind): TgAny {
   switch (kind) {
     case "poll":
-      return { type: "regular", is_anonymous: true, options: "Yes\nNo" };
+      return {
+        type: "regular",
+        is_anonymous: true,
+        allows_revoting: true,
+        correct_option_ids: "0",
+        options: "Yes\nNo",
+      };
     case "dice":
       return { emoji: "🎲" };
     case "invoice":

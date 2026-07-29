@@ -452,21 +452,40 @@ function Venue({ m }: { m: StoredMessage }) {
 function Poll({ m }: { m: StoredMessage }) {
   const p = m.poll as TgAny;
   const total = p.total_voter_count || 0;
+  const correctIds = new Set<number>(
+    Array.isArray(p.correct_option_ids)
+      ? p.correct_option_ids
+      : Number.isSafeInteger(p.correct_option_id)
+        ? [p.correct_option_id]
+        : []
+  );
   return (
     <div style={{ minWidth: "15rem" }}>
       <div style={{ fontWeight: 500, marginBottom: "0.125rem" }}>
         {renderEntities(p.question, p.question_entities)}
       </div>
+      {p.description ? (
+        <div style={{ marginBottom: "0.375rem" }}>
+          {renderEntities(p.description, p.description_entities)}
+        </div>
+      ) : null}
+      <PollMediaView media={p.media} />
       <div className="muted" style={{ fontSize: "0.75rem", marginBottom: "0.375rem" }}>
         {p.type === "quiz" ? "Quiz" : p.is_anonymous ? "Anonymous poll" : "Poll"}
         {p.is_closed ? " · closed" : ""}
         {p.allows_multiple_answers ? " · multiple answers" : ""}
+        {p.allows_revoting ? " · revoting" : ""}
+        {p.members_only ? " · long-term members only" : ""}
+        {Array.isArray(p.country_codes) && p.country_codes.length
+          ? ` · ${p.country_codes.join(", ")}`
+          : ""}
       </div>
       {(p.options || []).map((o: TgAny, i: number) => {
         const pct = total ? Math.round(((o.voter_count || 0) / total) * 100) : 0;
-        const correct = p.type === "quiz" && p.correct_option_id === i;
+        const correct = p.type === "quiz" && correctIds.has(i);
         return (
           <div key={i} style={{ marginBottom: "0.375rem" }}>
+            <PollMediaView media={o.media} compact />
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8125rem" }}>
               <span>
                 {correct ? "✅ " : ""}
@@ -491,8 +510,73 @@ function Poll({ m }: { m: StoredMessage }) {
       <div className="muted" style={{ fontSize: "0.75rem" }}>
         {total} vote{total === 1 ? "" : "s"}
       </div>
+      {p.explanation || p.explanation_media ? (
+        <div style={{ marginTop: "0.5rem", paddingTop: "0.5rem", borderTop: "1px solid rgba(127,127,127,.22)" }}>
+          <PollMediaView media={p.explanation_media} />
+          {p.explanation ? renderEntities(p.explanation, p.explanation_entities) : null}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function PollMediaView({ media, compact = false }: { media?: TgAny; compact?: boolean }) {
+  if (!media) return null;
+  const maxWidth = compact ? "7rem" : "16rem";
+  const imageStyle = {
+    display: "block",
+    width: "100%",
+    maxWidth,
+    maxHeight: compact ? "5rem" : "12rem",
+    marginBottom: "0.35rem",
+    borderRadius: MEDIA_RADIUS,
+    objectFit: "cover" as const,
+  };
+  if (media.link?.url) {
+    return (
+      <a href={media.link.url} target="_blank" rel="noreferrer" className="link" style={{ display: "block", marginBottom: "0.35rem" }}>
+        {media.link.url}
+      </a>
+    );
+  }
+  const photo = bestPhoto(media.photo);
+  if (photo?.file_id) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={fileSrc(photo.file_id)} alt="" loading="lazy" style={imageStyle} />;
+  }
+  if (media.sticker) {
+    return <StickerMedia sticker={media.sticker} className={compact ? "sm" : ""} />;
+  }
+  const video = media.video || media.animation || media.live_photo;
+  const videoFileId = video?.file_id || video?.video?.file_id;
+  if (videoFileId) {
+    return (
+      <video
+        src={fileSrc(videoFileId)}
+        poster={video.thumbnail?.file_id ? fileSrc(video.thumbnail.file_id) : undefined}
+        controls={!compact}
+        muted={compact}
+        playsInline
+        preload="metadata"
+        style={imageStyle}
+      />
+    );
+  }
+  if (media.audio?.file_id) {
+    return <audio src={fileSrc(media.audio.file_id)} controls preload="metadata" style={{ width: "100%", maxWidth }} />;
+  }
+  if (media.document?.file_id) {
+    return (
+      <a href={fileSrc(media.document.file_id)} className="link" download>
+        📎 {media.document.file_name || "Poll document"}
+      </a>
+    );
+  }
+  if (media.venue) return <Simple label={`📍 ${media.venue.title || "Venue"}`} sub={media.venue.address} />;
+  if (media.location) {
+    return <Simple label="📍 Poll location" sub={`${media.location.latitude}, ${media.location.longitude}`} />;
+  }
+  return null;
 }
 
 /* ----------------------------------------------------------------- misc */

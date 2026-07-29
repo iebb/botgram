@@ -111,6 +111,8 @@ export interface AppSnapshot {
     lastError: string | null;
     lastPollAt: number | null;
     updatesSeen: number;
+    /** Telegram's pending_update_count observed when the dashboard connected. */
+    pendingUpdates: number;
   };
   log: LogEntry[];
 }
@@ -154,4 +156,5 @@ export type StreamEvent =
   | { type: "polling"; polling: AppSnapshot["polling"] }
   | { type: "log"; entry: LogEntry }
   | { type: "raw"; update: TgUpdate }
+  | { type: "batch"; events: StreamEvent[] }
   | { type: "ping" };

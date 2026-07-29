@@ -11,12 +11,14 @@ const PREFERENCES = "preferences";
 const STICKER_LIBRARIES = "sticker-libraries";
 
 export interface StoredDashboard {
-  version: 1;
+  version: 1 | 2;
   botId: string;
   savedAt: number;
   snapshot: AppSnapshot;
   avatarFileIds: Record<string, string | null>;
   selectedChatId: string | null;
+  /** Recent Telegram update ids used to suppress retries after DO hibernation. */
+  seenUpdateIds?: number[];
 }
 
 let databasePromise: Promise<IDBDatabase> | null = null;
@@ -167,7 +169,7 @@ function isStoredDashboard(value: unknown, botId: string): value is StoredDashbo
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<StoredDashboard>;
   const snapshot = candidate.snapshot as Partial<AppSnapshot> | undefined;
-  return candidate.version === 1
+  return (candidate.version === 1 || candidate.version === 2)
     && candidate.botId === botId
     && typeof candidate.savedAt === "number"
     && Boolean(snapshot)
@@ -178,5 +180,12 @@ function isStoredDashboard(value: unknown, botId: string): value is StoredDashbo
     && Array.isArray(snapshot?.log)
     && Boolean(snapshot?.polling && typeof snapshot.polling === "object")
     && Boolean(candidate.avatarFileIds && typeof candidate.avatarFileIds === "object")
+    && (
+      candidate.seenUpdateIds == null
+      || (
+        Array.isArray(candidate.seenUpdateIds)
+        && candidate.seenUpdateIds.every((id) => Number.isSafeInteger(id))
+      )
+    )
     && (candidate.selectedChatId == null || typeof candidate.selectedChatId === "string");
 }
